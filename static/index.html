@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram 名片分享与群组工具</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <!-- 内置图标库(离线可用) -->
+    <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg">
+      <symbol id="i-logo" viewBox="0 0 24 24">
+        <path d="M21.5 4.5 2.9 11.7c-.8.3-.77 1.5.05 1.75l4.6 1.53 1.77 5.47c.27.83 1.33.97 1.8.23l2.44-3.87 4.85 3.57c.63.46 1.54.12 1.72-.65l3.02-13.6c.2-.9-.7-1.64-1.65-1.13Z"/>
+        <path d="m7.55 14.95 9.32-8.74c.3-.28.75.2.43.5l-7.62 7.13-.28 3.1"/>
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
+        <path d="M18.7 10.7a7.6 7.6 0 0 0-.1-1.3l2-1.6-2-3.4-2.4 1a7.3 7.3 0 0 0-2.2-1.3L13.6 1.5h-3.2l-.4 2.6a7.3 7.3 0 0 0-2.2 1.3l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2.6l-2 1.6 2 3.4 2.4-1a7.3 7.3 0 0 0 2.2 1.3l.4 2.6h3.2l.4-2.6a7.3 7.3 0 0 0 2.2-1.3l2.4 1 2-3.4-2-1.6c.07-.43.1-.86.1-1.3Z"/>
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+        <circle cx="9" cy="7" r="4"/>
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </symbol>
+      <symbol id="i-card" viewBox="0 0 24 24">
+        <path d="M20 6H4a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2Z"/>
+        <circle cx="8" cy="11" r="2"/>
+        <path d="M13 11h5M13 15h4M6 15h3"/>
+      </symbol>
+      <symbol id="i-kanban" viewBox="0 0 24 24">
+        <path d="M5 3H4a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-1"/>
+        <path d="M8 3v18M12 3v10M16 3v6"/>
+      </symbol>
+      <symbol id="i-login" viewBox="0 0 24 24">
+        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+        <path d="m10 17 5-5-5-5"/>
+        <path d="M15 12H3"/>
+      </symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <path d="m7 9 5-5 5 5"/>
+        <path d="M12 4v12"/>
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+        <path d="M21 3v6h-6"/>
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="7"/>
+        <path d="m21 21-4.3-4.3"/>
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m22 2-11 11"/>
+        <path d="M22 2 15 22l-4-9-9-4 20-7Z"/>
+      </symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24">
+        <rect x="6" y="6" width="12" height="12" rx="2"/>
+      </symbol>
+    </svg>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-logo"><svg class="ico"><use href="#i-logo"/></svg></span>
+        <div>
+          <h1>Telegram 名片分享与群组工具</h1>
+          <p>仅操作自有或已获授权的账号、会话与群组</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="authBadge" class="badge badge-muted">未配置</span>
+        <button id="configBtn" class="btn btn-secondary">
+          <svg class="ico"><use href="#i-settings"/></svg><span>API 设置</span>
+        </button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="accounts">
+        <svg class="ico"><use href="#i-users"/></svg><span>账号管理</span>
+      </button>
+      <button class="tab" data-tab="share">
+        <svg class="ico"><use href="#i-card"/></svg><span>名片分享</span>
+      </button>
+      <button class="tab" data-tab="groups">
+        <svg class="ico"><use href="#i-kanban"/></svg><span>群组管理</span>
+      </button>
+    </nav>
+
+    <main>
+      <section id="tab-accounts" class="tab-panel active">
+        <div class="panel-grid two">
+          <div class="panel">
+            <h2>登录账号</h2>
+            <p class="hint">已有 Session 可直接在下方列表验证；新账号会先发送验证码。</p>
+            <form id="loginForm" class="form">
+              <label for="loginPhone">手机号 / 国家区号 + 手机号</label>
+              <input id="loginPhone" name="phone" autocomplete="tel" placeholder="+8613800138000" />
+              <button type="submit" class="btn btn-primary">
+                <svg class="ico"><use href="#i-login"/></svg><span>发送验证码</span>
+              </button>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <h2>账号列表</h2>
+              <div class="panel-actions">
+                <button id="importBtn" class="btn btn-secondary">
+                  <svg class="ico"><use href="#i-upload"/></svg><span>导入 Session</span>
+                </button>
+                <button id="refreshAccountsBtn" class="btn btn-secondary">
+                  <svg class="ico"><use href="#i-refresh"/></svg><span>刷新</span>
+                </button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>手机号</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="accountsBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-share" class="tab-panel">
+        <div class="share-grid">
+          <div class="panel chat-panel">
+            <div class="panel-head">
+              <h2>会话 / 群组</h2>
+              <select id="shareAccount" class="select"></select>
+            </div>
+            <div class="toolbar">
+              <select id="dialogFilter" class="select">
+                <option value="all">全部</option>
+                <option value="channel">频道</option>
+                <option value="group">群组</option>
+                <option value="private">私聊</option>
+              </select>
+              <input id="dialogSearch" class="input" placeholder="搜索名称" />
+              <button id="fetchDialogsBtn" class="btn btn-secondary">
+                <svg class="ico"><use href="#i-search"/></svg><span>拉取会话</span>
+              </button>
+            </div>
+            <div class="chat-actions">
+              <button id="selectAllBtn" class="btn btn-ghost">全选</button>
+              <button id="invertBtn" class="btn btn-ghost">反选</button>
+              <button id="clearSelectionBtn" class="btn btn-ghost">清空选择</button>
+            </div>
+            <div id="shareChatList" class="chat-list"></div>
+          </div>
+
+          <div class="panel compose-panel">
+            <h2>真实名片分享</h2>
+            <p class="hint">每行一个号码：<code>手机号</code> 或 <code>手机号;姓名;姓氏</code></p>
+            <textarea id="numbersInput" class="textarea" placeholder="+8613800138000;张三;张&#10;13800138001"></textarea>
+
+            <div class="options-grid">
+              <label class="field">
+                <span>轮数</span>
+                <input id="rounds" type="number" class="input" value="1" min="1" />
+              </label>
+              <label class="field">
+                <span>发送间隔（秒）</span>
+                <input id="interval" type="number" class="input" value="8" min="0" step="1" />
+              </label>
+              <label class="field">
+                <span>回退名</span>
+                <input id="fallbackFirst" class="input" placeholder="可选" />
+              </label>
+              <label class="field">
+                <span>回退姓</span>
+                <input id="fallbackLast" class="input" placeholder="可选" />
+              </label>
+              <label class="check">
+                <input id="fetchNames" type="checkbox" />
+                <span>批量获取缺失姓名</span>
+              </label>
+              <label class="check">
+                <input id="skipUnresolved" type="checkbox" />
+                <span>跳过未关联号码</span>
+              </label>
+              <label class="check">
+                <input id="allowEmpty" type="checkbox" checked />
+                <span>姓名可空</span>
+              </label>
+            </div>
+
+            <div class="compose-actions">
+              <button id="startShareBtn" class="btn btn-primary">
+                <svg class="ico"><use href="#i-send"/></svg><span>批量开始分享</span>
+              </button>
+              <button id="stopShareBtn" class="btn btn-danger">
+                <svg class="ico"><use href="#i-stop"/></svg><span>停止</span>
+              </button>
+            </div>
+
+            <div id="taskStatus" class="task-status"></div>
+            <div class="log-head">
+              <span>实时日志</span>
+              <button id="clearLogBtn" class="btn btn-ghost">清空日志</button>
+            </div>
+            <div id="logBox" class="log"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-groups" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>频道 / 群组 / 私聊</h2>
+            <select id="groupsAccount" class="select"></select>
+          </div>
+          <div class="toolbar">
+            <select id="groupsFilter" class="select">
+              <option value="all">全部</option>
+              <option value="channel">频道</option>
+              <option value="group">群组</option>
+              <option value="private">私聊</option>
+            </select>
+            <input id="groupsSearch" class="input" placeholder="搜索名称" />
+            <button id="fetchGroupsBtn" class="btn btn-secondary">
+              <svg class="ico"><use href="#i-search"/></svg><span>拉取会话</span>
+            </button>
+          </div>
+          <div id="groupsChatList" class="chat-list"></div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="configDialog" class="dialog">
+      <form method="dialog" class="dialog-body">
+        <h2>API 设置</h2>
+        <p class="hint">在 <a href="https://my.telegram.org" target="_blank">my.telegram.org</a> 创建应用后填写。</p>
+        <label class="field">
+          <span>api_id</span>
+          <input id="apiId" type="number" class="input" />
+        </label>
+        <label class="field">
+          <span>api_hash</span>
+          <input id="apiHash" type="text" class="input" />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" data-close>取消</button>
+          <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="codeDialog" class="dialog">
+      <form id="codeForm" class="dialog-body">
+        <h2 id="codeTitle">输入验证码</h2>
+        <p id="codeHint" class="hint"></p>
+        <label class="field">
+          <span id="codeLabel">验证码</span>
+          <input id="codeInput" type="text" class="input" autocomplete="one-time-code" />
+        </label>
+        <div id="codeError" class="error-text"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" data-close>取消</button>
+          <button type="submit" class="btn btn-primary"><span>提交</span></button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="importDialog" class="dialog">
+      <form id="importForm" class="dialog-body">
+        <h2>导入已有 Session</h2>
+        <p class="hint">粘贴 Telethon/Pyrogram 等生成的 Session 字符串。</p>
+        <label class="field">
+          <span>手机号</span>
+          <input id="importPhone" class="input" placeholder="+8613800138000" />
+        </label>
+        <label class="field">
+          <span>Session</span>
+          <textarea id="importSession" class="textarea small"></textarea>
+        </label>
+        <div id="importError" class="error-text"></div>
+        <div class="dialog-actions">
+          <button type="button" class="btn btn-secondary" data-close>取消</button>
+          <button type="submit" class="btn btn-primary">导入</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>

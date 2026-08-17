@@ -1,0 +1,8 @@
+telethon==1.44.0
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pyinstaller>=6.0
+pywebview>=5.0
+pyjwt>=2.8.0
+cryptography==44.0.2  # 50.x 的 x86_64 轮子在 Rosetta/Intel 下加载失败,双架构构建必须用此版本
+requests>=2.31.0

@@ -1,0 +1,61 @@
+name: Build Windows
+
+on:
+  # 手动触发：在 GitHub 仓库 Actions 页面点 "Run workflow"
+  workflow_dispatch:
+    inputs:
+      license_url:
+        description: "授权服务器地址（留空则用 static/license_config.json 中的值）"
+        required: false
+        default: "http://47.116.59.161:9000"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create venv & install deps
+        shell: pwsh
+        run: |
+          python -m venv venv
+          venv\Scripts\python.exe -m pip install --upgrade pip
+          venv\Scripts\python.exe -m pip install -r requirements.txt
+
+      - name: Write license config
+        if: ${{ github.event.inputs.license_url != '' }}
+        shell: pwsh
+        run: |
+          $url = "${{ github.event.inputs.license_url }}".TrimEnd('/')
+          @{license_url = $url} | ConvertTo-Json | Set-Content -Encoding utf8 static\license_config.json
+          Write-Host "License URL: $url"
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          venv\Scripts\python.exe -m PyInstaller `
+            --noconfirm `
+            --windowed `
+            --name "TelegramCardTool" `
+            --add-data "static;static" `
+            --collect-all telethon `
+            desktop.py
+
+      - name: Zip artifact
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\TelegramCardTool\*" -DestinationPath "dist\TelegramCardTool-Windows-x64.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TelegramCardTool-Windows-x64
+          path: dist\TelegramCardTool-Windows-x64.zip
+          retention-days: 30

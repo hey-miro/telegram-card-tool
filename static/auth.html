@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>软件授权 - Telegram 名片分享与群组工具 (授权版)</title>
+    <link rel="stylesheet" href="/static/auth.css" />
+  </head>
+  <body>
+    <div class="auth-window">
+      <div class="auth-titlebar">
+        <span class="icon">T</span>
+        <span>软件授权 - Telegram 名片分享与群组工具 (授权版)</span>
+      </div>
+
+      <div class="auth-body">
+        <h2>软件授权</h2>
+        <div class="auth-desc">
+          <p>
+            输入管理员发放的授权码后,软件会自动绑定当前电脑。无需查找、复制或发送机器码。
+          </p>
+          <p>
+            授权服务只接收不可逆设备哈希;不会接收 Telegram 手机号、验证码、二步验证、API Hash
+            或 Session。
+          </p>
+        </div>
+
+        <form id="activateForm" class="auth-form">
+          <div class="field-row">
+            <label for="licenseCode">授权码</label>
+            <div class="input-wrap">
+              <input
+                id="licenseCode"
+                class="input"
+                type="password"
+                autocomplete="off"
+                placeholder="请输入授权码"
+              />
+            </div>
+          </div>
+
+          <label class="check-row">
+            <input id="showCode" type="checkbox" />
+            <span>临时显示授权码</span>
+          </label>
+
+          <div class="form-actions">
+            <button id="activateBtn" type="submit" class="btn btn-primary">
+              <span>激活并进入软件</span>
+            </button>
+          </div>
+          <div id="formError" class="error-text"></div>
+        </form>
+
+        <div class="status-panel">
+          <div class="status-row">
+            <label>授权状态</label>
+            <div id="statusText" class="value danger">未授权</div>
+          </div>
+          <div class="status-row">
+            <label>到期时间</label>
+            <div id="expireText" class="value">-</div>
+          </div>
+          <div class="status-row">
+            <label>当前模式</label>
+            <div id="modeText" class="value">未授权</div>
+          </div>
+
+          <div class="status-actions">
+            <div class="left">
+              <button id="recheckBtn" type="button" class="btn btn-secondary">
+                重新检查
+              </button>
+            </div>
+            <div class="right">
+              <button id="closeBtn" type="button" class="btn btn-secondary">
+                关闭
+              </button>
+              <button id="enterBtn" type="button" class="btn btn-primary" disabled>
+                进入软件
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script src="/static/auth.js" defer></script>
+  </body>
+</html>
