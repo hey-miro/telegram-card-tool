@@ -19,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-import jwt
 import requests
 
 
@@ -232,21 +231,36 @@ def verify_license_remote(token: str, device_hash: str) -> dict:
 # ---------------------------------------------------------------------------
 # 本地校验
 # ---------------------------------------------------------------------------
-def _verify_token_locally(token: str, device_hash: str, secret: str) -> dict:
+def _decode_token_payload(token: str) -> dict:
+    """解析 JWT payload(不验证签名),用于离线检查过期时间."""
+    import base64
+
     try:
-        payload = jwt.decode(
-            token,
-            secret,
-            algorithms=["HS256"],
-            issuer="tg-card-license",
-        )
-    except jwt.ExpiredSignatureError:
-        raise RuntimeError("授权已到期")
-    except jwt.InvalidTokenError as exc:
-        raise RuntimeError(f"授权凭证无效: {exc}")
+        parts = token.split(".")
+        if len(parts) != 3:
+            raise ValueError("非法的 token 格式")
+        payload_b64 = parts[1]
+        # 补齐 base64 padding
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        payload_json = base64.urlsafe_b64decode(payload_b64).decode("utf-8")
+        return json.loads(payload_json)
+    except Exception as exc:
+        raise RuntimeError(f"无法解析授权凭证: {exc}")
+
+
+def _verify_token_locally(token: str, device_hash: str) -> dict:
+    """本地离线验证:只检查设备哈希与过期时间,不验证签名.
+
+    签名验证由授权服务器负责;客户端不持有 JWT_SECRET,避免密钥泄露.
+    """
+    payload = _decode_token_payload(token)
 
     if payload.get("device_hash") != device_hash:
         raise RuntimeError("授权与当前设备不匹配")
+
+    exp = payload.get("exp")
+    if exp and datetime.now(timezone.utc).timestamp() > exp:
+        raise RuntimeError("授权已到期")
 
     return payload
 
@@ -263,7 +277,13 @@ def get_license_status(
         invalid_device    设备不匹配
         valid             授权有效
         remote_error      在线校验失败(仅在 check_remote=True 时出现)
+
+    注意:
+        jwt_secret 参数已废弃,保留仅为了兼容旧调用方.
     """
+    # jwt_secret 不再使用,避免客户端与服务器密钥不一致导致误报.
+    _ = jwt_secret
+
     info = load_license()
     if not info:
         return {"status": "unauthorized", "message": "尚未激活,请输入授权码"}
@@ -272,13 +292,11 @@ def get_license_status(
     if info.get("device_hash") != device_hash:
         return {"status": "invalid_device", "message": "授权与当前设备不匹配"}
 
-    # 本地先检查 token 是否过期
-    secret = jwt_secret or os.environ.get("LICENSE_JWT_SECRET", "")
-    if secret:
-        try:
-            _verify_token_locally(info["token"], device_hash, secret)
-        except RuntimeError as exc:
-            return {"status": "expired", "message": str(exc)}
+    # 本地离线检查 token 是否过期(不验证签名)
+    try:
+        _verify_token_locally(info["token"], device_hash)
+    except RuntimeError as exc:
+        return {"status": "expired", "message": str(exc)}
 
     # 在线刷新/校验
     if check_remote:

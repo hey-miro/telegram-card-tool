@@ -15,7 +15,6 @@ import license_client
 
 
 # 授权相关配置
-LICENSE_JWT_SECRET = os.environ.get("LICENSE_JWT_SECRET", "")
 _license_cache = {"status": None, "expires_at": 0}
 _license_cache_ttl = 300  # 5 分钟
 
@@ -29,7 +28,6 @@ async def _license_status(force_remote: bool = False) -> dict:
     status = await asyncio.to_thread(
         license_client.get_license_status,
         check_remote=True,
-        jwt_secret=LICENSE_JWT_SECRET,
     )
     _license_cache["status"] = status
     _license_cache["expires_at"] = now + _license_cache_ttl
