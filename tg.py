@@ -166,7 +166,7 @@ async def start_login(phone):
 
 async def _finish_login(phone, client, me):
     session_string = client.session.save()
-    store.upsert_account(phone, session_string)
+    store.upsert_account(phone, session_string, status="valid")
     await client.disconnect()
     _pending.pop(phone, None)
     return {"next": "done", "phone": phone, "user": _user_info(me)}
@@ -241,12 +241,15 @@ async def import_session(phone, session_string):
     try:
         me = await asyncio.wait_for(client.get_me(), timeout=30)
         if me is None:
+            acc = store.get_account_by_phone(phone)
+            if acc:
+                store.set_account_status(acc["id"], "invalid")
             raise ValueError("Session 无效，未能取得账号信息")
         saved = client.session.save()
     finally:
         await client.disconnect()
 
-    store.upsert_account(phone, saved)
+    store.upsert_account(phone, saved, status="valid")
     return {"phone": phone, "user": _user_info(me)}
 
 
@@ -267,12 +270,13 @@ async def verify_account(account_id):
     try:
         me = await asyncio.wait_for(client.get_me(), timeout=30)
         if me is None:
+            store.set_account_status(account_id, "invalid")
             raise ValueError("Session 已失效，请重新登录")
         saved = client.session.save()
     finally:
         await client.disconnect()
 
-    store.upsert_account(account["phone"], saved)
+    store.upsert_account(account["phone"], saved, status="valid")
     return {"phone": account["phone"], "user": _user_info(me), "ok": True}
 
 

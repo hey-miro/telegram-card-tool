@@ -43,11 +43,24 @@ def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     phone TEXT UNIQUE NOT NULL,
                     session TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    last_check_at INTEGER,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
                 );
                 """
             )
+            # 兼容旧库：缺少 status / last_check_at 列时补上
+            cols = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(accounts)").fetchall()
+            }
+            if "status" not in cols:
+                conn.execute(
+                    "ALTER TABLE accounts ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'"
+                )
+            if "last_check_at" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN last_check_at INTEGER")
             conn.commit()
         finally:
             conn.close()
@@ -106,20 +119,35 @@ def set_config(
     set_setting("proxy_port", proxy_port or "")
 
 
-def upsert_account(phone, session):
+def upsert_account(phone, session, status="valid"):
     now = int(time.time())
     with _lock:
         conn = _connect()
         try:
             conn.execute(
                 """
-                INSERT INTO accounts(phone, session, created_at, updated_at)
-                VALUES(?, ?, ?, ?)
+                INSERT INTO accounts(phone, session, status, last_check_at, created_at, updated_at)
+                VALUES(?, ?, ?, ?, ?, ?)
                 ON CONFLICT(phone) DO UPDATE SET
                     session = excluded.session,
+                    status = excluded.status,
+                    last_check_at = excluded.last_check_at,
                     updated_at = excluded.updated_at
                 """,
-                (phone, session, now, now),
+                (phone, session, status, now, now, now),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def set_account_status(account_id, status):
+    with _lock:
+        conn = _connect()
+        try:
+            conn.execute(
+                "UPDATE accounts SET status = ?, last_check_at = ?, updated_at = ? WHERE id = ?",
+                (status, int(time.time()), int(time.time()), account_id),
             )
             conn.commit()
         finally:
@@ -131,7 +159,7 @@ def list_accounts():
         conn = _connect()
         try:
             rows = conn.execute(
-                "SELECT id, phone, session, created_at, updated_at "
+                "SELECT id, phone, session, status, last_check_at, created_at, updated_at "
                 "FROM accounts ORDER BY updated_at DESC"
             ).fetchall()
             return [
@@ -139,6 +167,8 @@ def list_accounts():
                     "id": row["id"],
                     "phone": row["phone"],
                     "has_session": bool(row["session"]),
+                    "status": row["status"] or "unknown",
+                    "last_check_at": row["last_check_at"],
                     "updated_at": row["updated_at"],
                 }
                 for row in rows

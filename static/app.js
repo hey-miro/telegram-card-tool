@@ -102,6 +102,19 @@ async function loadAccounts() {
   renderAccountSelectors();
 }
 
+function accountStatusBadge(account) {
+  if (!account.has_session) {
+    return '<span class="badge badge-muted">无会话</span>';
+  }
+  if (account.status === "valid") {
+    return '<span class="badge badge-ok">正常</span>';
+  }
+  if (account.status === "invalid") {
+    return '<span class="badge badge-danger">失效</span>';
+  }
+  return '<span class="badge badge-muted">未验证</span>';
+}
+
 function renderAccounts() {
   const body = el("accountsBody");
   if (!state.accounts.length) {
@@ -113,11 +126,7 @@ function renderAccounts() {
       (account) => `
         <tr>
           <td>${escapeHtml(account.phone)}</td>
-          <td>${
-            account.has_session
-              ? '<span class="badge badge-ok">已保存</span>'
-              : '<span class="badge badge-muted">无会话</span>'
-          }</td>
+          <td>${accountStatusBadge(account)}</td>
           <td>
             <div class="row-actions">
               <button class="btn btn-secondary" data-action="verify" data-id="${
@@ -475,13 +484,20 @@ function bindEvents() {
     if (!button) return;
     const accountId = Number(button.dataset.id);
     if (button.dataset.action === "verify") {
+      button.disabled = true;
+      button.textContent = "验证中…";
       try {
         const result = await api(`/api/accounts/${accountId}/verify`, {
           method: "POST",
         });
         toast(`账号 ${result.phone} 验证成功`);
+        await loadAccounts();
       } catch (error) {
         toast(error.message, true);
+        await loadAccounts();
+      } finally {
+        button.disabled = false;
+        button.textContent = "验证";
       }
     } else if (button.dataset.action === "remove") {
       if (!window.confirm("确认移除该账号及其本地会话？")) return;
