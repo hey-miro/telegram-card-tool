@@ -17,13 +17,18 @@ from telethon.errors import (
     SessionPasswordNeededError,
 )
 from telethon.sessions import StringSession
-from telethon.tl.functions.contacts import ImportContactsRequest
+from telethon.tl.functions.contacts import (
+    DeleteContactsRequest,
+    ImportContactsRequest,
+)
+from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import (
     InputMediaContact,
     InputPeerChannel,
     InputPeerChat,
     InputPeerUser,
     InputPhoneContact,
+    InputUser,
 )
 
 import store
@@ -364,23 +369,30 @@ def _peer_from_target(target):
     raise ValueError(f"未知目标类型: {d_type}")
 
 
-async def _import_contacts(client, task, parsed):
+async def _import_contacts(client, task, parsed, name_overrides=None):
     """把号码批量导入当前账号的 Telegram 通讯录。
 
     作用：
     1. 让 Telegram 建立号码 → 用户的关联，发出的名片会自动带头像/姓名（完整卡片样式）
     2. 顺带检测每个号码是否注册了 Telegram（返回结果只含已注册号码）
 
-    返回 {纯数字号码: (first_name, last_name)}，仅包含已注册 Telegram 的号码。
+    name_overrides: {纯数字号码: (first, last)}，导入时优先使用的姓名。
+
+    返回 {纯数字号码: (user_id, access_hash)}，仅包含已注册 Telegram 的号码。
     """
+    overrides = name_overrides or {}
     contacts = []
     for idx, number in enumerate(parsed):
         phone = number["phone"]
-        first = number["first_name"] or f"联系人{phone[-4:]}"
-        last = number["last_name"] or ""
+        digits = re.sub(r"\D", "", phone)
+        if digits in overrides:
+            first, last = overrides[digits]
+        else:
+            first = number["first_name"] or f"联系人{phone[-4:]}"
+            last = number["last_name"] or ""
         contacts.append((idx, phone, first, last))
 
-    registered = {}
+    users = {}
     batch_size = 50
     for start in range(0, len(contacts), batch_size):
         chunk = contacts[start : start + batch_size]
@@ -411,11 +423,84 @@ async def _import_contacts(client, task, parsed):
         for user in getattr(resp, "users", []) or []:
             uphone = re.sub(r"\D", "", str(getattr(user, "phone", None) or ""))
             if uphone:
-                registered[uphone] = (
-                    getattr(user, "first_name", None) or "",
-                    getattr(user, "last_name", None) or "",
-                )
-    return registered
+                users[uphone] = (user.id, user.access_hash)
+    return users
+
+
+async def _fetch_profile_names(client, task, users):
+    """拉取已注册号码对应 Telegram 账号的资料姓名。
+
+    原理：号码在通讯录中时，接口返回的是我们自己存的备注名；
+    删除联系人后返回的才是对方账号资料上设置的名字。
+    因此流程为：删除联系人 -> GetUsers 取资料名 -> 再重新导入（保证发名片时仍有关联）。
+
+    users: {纯数字号码: (user_id, access_hash)}
+    返回 {纯数字号码: (first_name, last_name)}，可能只包含部分号码（查询失败的不在内）。
+    """
+    if not users:
+        return {}
+
+    input_users = [
+        InputUser(user_id=uid, access_hash=ahash) for uid, ahash in users.values()
+    ]
+    phones_by_uid = {uid: phone for phone, (uid, _) in users.items()}
+    profile_names = {}
+
+    try:
+        # 1) 删除联系人，让 GetUsers 返回真实资料名
+        for start in range(0, len(input_users), 50):
+            chunk = input_users[start : start + 50]
+            await asyncio.wait_for(
+                client(DeleteContactsRequest(id=chunk)), timeout=60
+            )
+        # 2) 批量拉取资料名
+        for start in range(0, len(input_users), 50):
+            chunk = input_users[start : start + 50]
+            resp = await asyncio.wait_for(
+                client(GetUsersRequest(id=chunk)), timeout=60
+            )
+            for user in resp or []:
+                uid = getattr(user, "id", None)
+                phone = phones_by_uid.get(uid)
+                if not phone:
+                    continue
+                first = getattr(user, "first_name", None) or ""
+                last = getattr(user, "last_name", None) or ""
+                if first or last:
+                    profile_names[phone] = (first, last)
+    except (RPCError, asyncio.TimeoutError) as exc:
+        _log(
+            task,
+            "warn",
+            f"拉取 Telegram 资料姓名失败({type(exc).__name__})，将回退到其他命名规则",
+        )
+
+    # 3) 重新导入联系人（用资料名），保证发名片时号码仍关联账号（带头像/按钮）
+    if profile_names:
+        await _reimport_with_names(client, task, profile_names)
+    return profile_names
+
+
+async def _reimport_with_names(client, task, profile_names):
+    """按资料姓名重新导入联系人，恢复号码-账号关联状态."""
+    contacts = [
+        InputPhoneContact(
+            client_id=i, phone=f"+{phone}", first_name=first, last_name=last
+        )
+        for i, (phone, (first, last)) in enumerate(profile_names.items())
+    ]
+    for start in range(0, len(contacts), 50):
+        chunk = contacts[start : start + 50]
+        try:
+            await asyncio.wait_for(
+                client(ImportContactsRequest(chunk)), timeout=60
+            )
+        except (RPCError, asyncio.TimeoutError) as exc:
+            _log(
+                task,
+                "warn",
+                f"恢复通讯录关联第 {start // 50 + 1} 批失败({type(exc).__name__})，相关名片可能无头像",
+            )
 
 
 async def _sleep_or_stop(seconds, stop_event):
@@ -515,19 +600,36 @@ async def _run_share(task, account, targets, parsed, options):
 
         # 发送前先把号码批量导入 Telegram 通讯录：
         # 已注册的号码会关联头像/姓名，名片在接收方显示为完整卡片
-        registered = await _import_contacts(client, task, parsed)
+        users = await _import_contacts(client, task, parsed)
+        registered = set(users.keys())
         _log(
             task,
             "info",
             f"通讯录导入完成：{len(registered)}/{len(parsed)} 个号码已关联 Telegram 账号",
         )
+
+        # 勾选「批量获取缺失姓名」时，拉取对方 Telegram 账号资料上设置的姓名
+        profile_names = {}
+        if fetch_names and registered:
+            profile_names = await _fetch_profile_names(client, task, users)
+            fetched = sum(
+                1
+                for n in parsed
+                if not (n["first_name"] or n["last_name"])
+                and re.sub(r"\D", "", n["phone"]) in profile_names
+            )
+            _log(
+                task,
+                "info",
+                f"资料姓名获取完成：{fetched} 个号码取到 Telegram 账号姓名",
+            )
+
         if skip_unresolved:
             unreg_count = sum(
                 1 for n in parsed if re.sub(r"\D", "", n["phone"]) not in registered
             )
             if unreg_count:
                 _log(task, "warn", f"检测到 {unreg_count} 个号码未注册 Telegram，将按规则跳过")
-
         for round_no in range(1, rounds + 1):
             if task["stop"].is_set():
                 break
@@ -552,15 +654,15 @@ async def _run_share(task, account, targets, parsed, options):
                     continue
 
                 if not first and not last:
-                    # 优先级：批量获取的 Telegram 姓名 > 回退姓名 > 自动命名（联系人+尾号）
-                    tg_first, tg_last = registered.get(phone_digits, ("", ""))
+                    # 优先级：Telegram 账号资料姓名 > 回退姓名 > 自动命名（联系人+尾号）
+                    tg_first, tg_last = profile_names.get(phone_digits, ("", ""))
                     if fetch_names and (tg_first or tg_last):
                         first = tg_first
                         last = tg_last
                         _log(
                             task,
                             "info",
-                            f"{mask_phone(phone)} 已获取姓名 {first} {last}".strip(),
+                            f"{mask_phone(phone)} 已获取 Telegram 姓名 {first} {last}".strip(),
                         )
                     elif fallback_first or fallback_last:
                         first = fallback_first
