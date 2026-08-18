@@ -247,6 +247,28 @@
           <span>api_hash</span>
           <input id="apiHash" type="text" class="input" />
         </label>
+        <div class="divider">网络代理（可选）</div>
+        <p class="hint">连接 Telegram 超时、无法直连时开启（如 Clash、V2Ray 等代理工具）。</p>
+        <label class="field checkbox">
+          <input id="proxyEnabled" type="checkbox" />
+          <span>启用代理</span>
+        </label>
+        <label class="field">
+          <span>代理类型</span>
+          <select id="proxyType" class="input">
+            <option value="socks5">SOCKS5</option>
+            <option value="http">HTTP</option>
+            <option value="socks4">SOCKS4</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>代理地址</span>
+          <input id="proxyHost" type="text" class="input" placeholder="127.0.0.1" />
+        </label>
+        <label class="field">
+          <span>代理端口</span>
+          <input id="proxyPort" type="number" class="input" placeholder="7890" />
+        </label>
         <div class="dialog-actions">
           <button type="button" class="btn btn-secondary" data-close>取消</button>
           <button type="submit" class="btn btn-primary">保存</button>

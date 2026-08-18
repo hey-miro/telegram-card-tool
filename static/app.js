@@ -75,6 +75,10 @@ async function loadConfig() {
   el("apiHash").placeholder = config.api_hash_configured
     ? "已配置，留空保持不变"
     : "请输入 api_hash";
+  el("proxyEnabled").checked = !!config.proxy_enabled;
+  el("proxyType").value = config.proxy_type || "socks5";
+  el("proxyHost").value = config.proxy_host || "";
+  el("proxyPort").value = config.proxy_port || "";
   updateAuthBadge();
 }
 
@@ -342,6 +346,10 @@ function bindEvents() {
           body: {
             api_id: Number(el("apiId").value),
             api_hash: el("apiHash").value.trim(),
+            proxy_enabled: el("proxyEnabled").checked,
+            proxy_type: el("proxyType").value,
+            proxy_host: el("proxyHost").value.trim(),
+            proxy_port: el("proxyPort").value.trim(),
           },
         });
         el("configDialog").close();

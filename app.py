@@ -122,6 +122,10 @@ async def license_clear():
 class ConfigIn(BaseModel):
     api_id: int = Field(gt=0)
     api_hash: str | None = None
+    proxy_enabled: bool = False
+    proxy_type: str = "socks5"
+    proxy_host: str = ""
+    proxy_port: str = ""
 
 
 class PhoneIn(BaseModel):
@@ -184,6 +188,10 @@ async def get_config():
         "configured": bool(cfg["api_id"] and cfg["api_hash"]),
         "api_id": cfg["api_id"],
         "api_hash_configured": bool(cfg["api_hash"]),
+        "proxy_enabled": cfg["proxy_enabled"],
+        "proxy_type": cfg["proxy_type"],
+        "proxy_host": cfg["proxy_host"],
+        "proxy_port": cfg["proxy_port"],
     }
 
 
@@ -194,7 +202,16 @@ async def set_config(body: ConfigIn):
         api_hash = store.get_config()["api_hash"] or ""
     if not api_hash:
         raise HTTPException(status_code=400, detail="api_id 与 api_hash 不能为空")
-    store.set_config(body.api_id, api_hash)
+    proxy_host = (body.proxy_host or "").strip()
+    proxy_port = (body.proxy_port or "").strip()
+    store.set_config(
+        body.api_id,
+        api_hash,
+        proxy_enabled=body.proxy_enabled,
+        proxy_type=(body.proxy_type or "socks5").strip().lower(),
+        proxy_host=proxy_host,
+        proxy_port=proxy_port,
+    )
     return {"ok": True, "configured": True}
 
 

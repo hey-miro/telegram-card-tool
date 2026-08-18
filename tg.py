@@ -73,12 +73,29 @@ def parse_numbers(text):
     return result
 
 
+def _proxy_tuple(cfg):
+    """根据配置构造 Telethon 代理参数，未启用或缺少地址时返回 None."""
+    if not cfg.get("proxy_enabled") or not cfg.get("proxy_host") or not cfg.get("proxy_port"):
+        return None
+    try:
+        port = int(cfg["proxy_port"])
+    except (TypeError, ValueError):
+        return None
+    if port <= 0 or port > 65535:
+        return None
+    ptype = (cfg.get("proxy_type") or "socks5").lower()
+    if ptype not in ("socks5", "socks4", "http"):
+        ptype = "socks5"
+    return (ptype, cfg["proxy_host"].strip(), port)
+
+
 def _client(session_string=None):
     cfg = store.get_config()
     if not cfg["api_id"] or not cfg["api_hash"]:
         raise ValueError("请先在「API 设置」中填写 api_id 与 api_hash")
     session = StringSession(session_string) if session_string else StringSession()
-    return TelegramClient(session, int(cfg["api_id"]), cfg["api_hash"])
+    proxy = _proxy_tuple(cfg)
+    return TelegramClient(session, int(cfg["api_id"]), cfg["api_hash"], proxy=proxy)
 
 
 def _user_info(user):

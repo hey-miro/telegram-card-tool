@@ -83,12 +83,27 @@ def get_config():
     return {
         "api_id": get_setting("api_id"),
         "api_hash": get_setting("api_hash"),
+        "proxy_enabled": get_setting("proxy_enabled") == "1",
+        "proxy_type": get_setting("proxy_type") or "socks5",
+        "proxy_host": get_setting("proxy_host") or "",
+        "proxy_port": get_setting("proxy_port") or "",
     }
 
 
-def set_config(api_id, api_hash):
+def set_config(
+    api_id,
+    api_hash,
+    proxy_enabled=False,
+    proxy_type="socks5",
+    proxy_host="",
+    proxy_port="",
+):
     set_setting("api_id", api_id)
     set_setting("api_hash", api_hash)
+    set_setting("proxy_enabled", "1" if proxy_enabled else "0")
+    set_setting("proxy_type", proxy_type or "socks5")
+    set_setting("proxy_host", proxy_host or "")
+    set_setting("proxy_port", proxy_port or "")
 
 
 def upsert_account(phone, session):
