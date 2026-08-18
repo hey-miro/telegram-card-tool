@@ -364,29 +364,58 @@ def _peer_from_target(target):
     raise ValueError(f"未知目标类型: {d_type}")
 
 
-async def _resolve_name(client, phone):
-    try:
-        response = await client(
-            ImportContactsRequest(
-                [
-                    InputPhoneContact(
-                        client_id=0,
-                        phone=phone,
-                        first_name="",
-                        last_name="",
+async def _import_contacts(client, task, parsed):
+    """把号码批量导入当前账号的 Telegram 通讯录。
+
+    作用：
+    1. 让 Telegram 建立号码 → 用户的关联，发出的名片会自动带头像/姓名（完整卡片样式）
+    2. 顺带检测每个号码是否注册了 Telegram（返回结果只含已注册号码）
+
+    返回 {纯数字号码: (first_name, last_name)}，仅包含已注册 Telegram 的号码。
+    """
+    contacts = []
+    for idx, number in enumerate(parsed):
+        phone = number["phone"]
+        first = number["first_name"] or f"联系人{phone[-4:]}"
+        last = number["last_name"] or ""
+        contacts.append((idx, phone, first, last))
+
+    registered = {}
+    batch_size = 50
+    for start in range(0, len(contacts), batch_size):
+        chunk = contacts[start : start + batch_size]
+        try:
+            resp = await asyncio.wait_for(
+                client(
+                    ImportContactsRequest(
+                        [
+                            InputPhoneContact(
+                                client_id=start + j,
+                                phone=phone,
+                                first_name=first,
+                                last_name=last,
+                            )
+                            for j, (_, phone, first, last) in enumerate(chunk)
+                        ]
                     )
-                ]
+                ),
+                timeout=60,
             )
-        )
-        if response.users:
-            user = response.users[0]
-            return (
-                getattr(user, "first_name", None) or "",
-                getattr(user, "last_name", None) or "",
+        except (RPCError, asyncio.TimeoutError) as exc:
+            _log(
+                task,
+                "warn",
+                f"通讯录导入第 {start // batch_size + 1} 批失败({type(exc).__name__})，相关名片可能无头像",
             )
-    except RPCError:
-        return "", ""
-    return "", ""
+            continue
+        for user in getattr(resp, "users", []) or []:
+            uphone = re.sub(r"\D", "", str(getattr(user, "phone", None) or ""))
+            if uphone:
+                registered[uphone] = (
+                    getattr(user, "first_name", None) or "",
+                    getattr(user, "last_name", None) or "",
+                )
+    return registered
 
 
 async def _sleep_or_stop(seconds, stop_event):
@@ -464,7 +493,6 @@ async def _run_share(task, account, targets, parsed, options):
     interval = max(0.0, float(options.get("interval", 8)))
     fetch_names = bool(options.get("fetch_missing_names", False))
     skip_unresolved = bool(options.get("skip_unresolved", False))
-    allow_empty = bool(options.get("allow_empty_name", False))
     fallback_first = str(options.get("fallback_first_name", "") or "")
     fallback_last = str(options.get("fallback_last_name", "") or "")
 
@@ -484,6 +512,22 @@ async def _run_share(task, account, targets, parsed, options):
             return
         _log(task, "info", f"账号 {mask_phone(account['phone'])} 已连接")
         _log(task, "info", f"发送目标: {target_summary}")
+
+        # 发送前先把号码批量导入 Telegram 通讯录：
+        # 已注册的号码会关联头像/姓名，名片在接收方显示为完整卡片
+        registered = await _import_contacts(client, task, parsed)
+        _log(
+            task,
+            "info",
+            f"通讯录导入完成：{len(registered)}/{len(parsed)} 个号码已关联 Telegram 账号",
+        )
+        if skip_unresolved:
+            unreg_count = sum(
+                1 for n in parsed if re.sub(r"\D", "", n["phone"]) not in registered
+            )
+            if unreg_count:
+                _log(task, "warn", f"检测到 {unreg_count} 个号码未注册 Telegram，将按规则跳过")
+
         for round_no in range(1, rounds + 1):
             if task["stop"].is_set():
                 break
@@ -495,42 +539,39 @@ async def _run_share(task, account, targets, parsed, options):
                 phone = number["phone"]
                 first = number["first_name"] or ""
                 last = number["last_name"] or ""
+                phone_digits = re.sub(r"\D", "", phone)
 
-                if not first and not last and fetch_names:
-                    resolved_first, resolved_last = await asyncio.wait_for(
-                        _resolve_name(client, phone), timeout=30
+                if skip_unresolved and phone_digits not in registered:
+                    task["skipped"] += len(peers)
+                    task["done"] += len(peers)
+                    _log(
+                        task,
+                        "warn",
+                        f"{mask_phone(phone)} 未关联 Telegram 账号，已跳过",
                     )
-                    if resolved_first or resolved_last:
-                        first = resolved_first or ""
-                        last = resolved_last or ""
+                    continue
+
+                if not first and not last:
+                    # 优先级：批量获取的 Telegram 姓名 > 回退姓名 > 自动命名（联系人+尾号）
+                    tg_first, tg_last = registered.get(phone_digits, ("", ""))
+                    if fetch_names and (tg_first or tg_last):
+                        first = tg_first
+                        last = tg_last
                         _log(
                             task,
                             "info",
                             f"{mask_phone(phone)} 已获取姓名 {first} {last}".strip(),
                         )
-
-                if not first and not last:
-                    if fallback_first or fallback_last:
+                    elif fallback_first or fallback_last:
                         first = fallback_first
                         last = fallback_last
-                    elif skip_unresolved:
-                        task["skipped"] += len(peers)
-                        task["done"] += len(peers)
+                    else:
+                        first = f"联系人{phone[-4:]}"
                         _log(
                             task,
-                            "warn",
-                            f"{mask_phone(phone)} 无姓名，按规则跳过",
+                            "info",
+                            f"{mask_phone(phone)} 无姓名，自动命名「{first}」",
                         )
-                        continue
-                    elif not allow_empty:
-                        task["skipped"] += len(peers)
-                        task["done"] += len(peers)
-                        _log(
-                            task,
-                            "warn",
-                            f"{mask_phone(phone)} 不允许空姓名，已跳过",
-                        )
-                        continue
 
                 media = InputMediaContact(
                     phone_number=phone,
