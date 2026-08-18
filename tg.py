@@ -256,9 +256,16 @@ async def verify_account(account_id):
         raise ValueError("账号不存在")
 
     client = _client(account["session"])
-    await client.connect()
     try:
-        me = await client.get_me()
+        await asyncio.wait_for(client.connect(), timeout=30)
+    except asyncio.TimeoutError:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        raise ValueError("连接 Telegram 超时（30 秒）：网络不通或需要代理，请检查网络后重试")
+    try:
+        me = await asyncio.wait_for(client.get_me(), timeout=30)
         if me is None:
             raise ValueError("Session 已失效，请重新登录")
         saved = client.session.save()

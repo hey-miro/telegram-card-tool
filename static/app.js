@@ -45,7 +45,20 @@ async function api(path, options = {}) {
   if (opts.body && typeof opts.body !== "string") {
     opts.body = JSON.stringify(opts.body);
   }
-  const response = await fetch(path, opts);
+  // 45 秒请求超时兜底，避免后端偶发挂起导致界面毫无反应
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45000);
+  let response;
+  try {
+    response = await fetch(path, { ...opts, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   let data = null;
   try {
     data = await response.json();
