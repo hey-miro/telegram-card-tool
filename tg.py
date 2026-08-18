@@ -545,6 +545,7 @@ async def _run_share(task, account, targets, parsed, options):
                     except FloodWaitError as exc:
                         wait = getattr(exc, "seconds", 0)
                         task["failed"] += 1
+                        task["status"] = "stopped"
                         task["error"] = f"触发 Telegram 限流，请 {wait} 秒（约 {wait // 3600} 小时）后再发名片"
                         _log(
                             task,
