@@ -169,7 +169,15 @@
               </label>
               <label class="field">
                 <span>发送间隔（秒）</span>
-                <input id="interval" type="number" class="input" value="8" min="0" step="1" />
+                <input id="interval" type="number" class="input" value="15" min="1" step="1" />
+              </label>
+              <label class="field">
+                <span>每批消息数</span>
+                <input id="batchSize" type="number" class="input" value="20" min="1" max="100" step="1" />
+              </label>
+              <label class="field">
+                <span>批次冷却（秒）</span>
+                <input id="batchPause" type="number" class="input" value="300" min="0" max="3600" step="1" />
               </label>
               <label class="field">
                 <span>回退名</span>
@@ -180,7 +188,7 @@
                 <input id="fallbackLast" class="input" placeholder="可选" />
               </label>
               <label class="check">
-                <input id="fetchNames" type="checkbox" checked />
+                <input id="fetchNames" type="checkbox" />
                 <span>自动获取对方 Telegram 账号姓名</span>
               </label>
               <label class="check">

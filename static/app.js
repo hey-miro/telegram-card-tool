@@ -289,6 +289,7 @@ function setRunning(running) {
 function renderTask(task) {
   const labels = {
     running: "运行中",
+    waiting: "等待中",
     done: "已完成",
     stopped: "已停止",
     error: "异常",
@@ -298,10 +299,17 @@ function renderTask(task) {
     : 0;
   const statusColor = {
     running: "var(--accent-cyan)",
+    waiting: "var(--warn)",
     done: "var(--ok)",
     stopped: "var(--warn)",
     error: "var(--danger)",
   }[task.status] || "var(--muted)";
+  const waitSeconds = task.wait_until
+    ? Math.max(0, task.wait_until - Math.floor(Date.now() / 1000))
+    : 0;
+  const waitingText = task.waiting_reason
+    ? `<span>等待原因<strong style="color:var(--warn)">${escapeHtml(task.waiting_reason)}（约 ${waitSeconds} 秒）</strong></span>`
+    : "";
   el("taskStatus").innerHTML = `
     <div class="task-stats">
       <span>状态<strong style="color:${statusColor}">${labels[task.status] || task.status}</strong></span>
@@ -309,6 +317,7 @@ function renderTask(task) {
       <span>失败<strong style="color:var(--danger)">${task.failed}</strong></span>
       <span>跳过<strong>${task.skipped}</strong></span>
       <span>进度<strong>${percent}%</strong></span>
+      ${waitingText}
     </div>
     <div class="progress-track"><div class="progress-fill" style="width:${percent}%"></div></div>`;
 
@@ -569,7 +578,9 @@ function bindEvents() {
 
     const options = {
       rounds: parseInt(el("rounds").value, 10) || 1,
-      interval: parseFloat(el("interval").value) || 0,
+      interval: parseFloat(el("interval").value) || 15,
+      batch_size: parseInt(el("batchSize").value, 10) || 20,
+      batch_pause: parseFloat(el("batchPause").value) || 0,
       fetch_missing_names: el("fetchNames").checked,
       skip_unresolved: el("skipUnresolved").checked,
       allow_empty_name: el("allowEmpty").checked,
