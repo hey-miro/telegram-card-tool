@@ -37,6 +37,7 @@ class ContactCacheTests(unittest.TestCase):
                     "first_name": "张三",
                     "last_name": "张",
                     "is_registered": True,
+                    "is_imported": True,
                 }
             ],
         )
@@ -56,6 +57,7 @@ class ContactCacheTests(unittest.TestCase):
 
         self.assertEqual(cached["8613912345678"]["first_name"], "张三")
         self.assertEqual(cached["8613912345678"]["access_hash"], "100")
+        self.assertTrue(cached["8613912345678"]["is_imported"])
 
     def test_deleting_account_also_deletes_contact_cache(self):
         store.upsert_contact_cache(
@@ -210,7 +212,7 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
                     {},
                 )
 
-    async def test_batch_pause_happens_after_configured_message_count(self):
+    async def test_default_share_prepares_contacts_before_sending(self):
         client = FakeClient()
         task = self.make_task(3)
         waits = []
@@ -249,7 +251,44 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task["done"], 3)
         self.assertEqual(waits, [(300, "批次冷却")])
         self.assertTrue(client.disconnected)
+        prepare_contacts.assert_awaited_once_with(
+            client,
+            task,
+            1,
+            mock.ANY,
+            add_to_contacts=True,
+        )
+
+    async def test_direct_send_skips_contact_import(self):
+        client = FakeClient()
+        task = self.make_task(1)
+
+        async def no_sleep(seconds, stop_event):
+            return None
+
+        with (
+            mock.patch.object(tg, "_client", return_value=client),
+            mock.patch.object(tg, "_connect_or_stop", return_value=True),
+            mock.patch.object(
+                tg, "_prepare_contacts", return_value=({}, {})
+            ) as prepare_contacts,
+            mock.patch.object(tg, "_sleep_or_stop", side_effect=no_sleep),
+        ):
+            await tg._run_share(
+                task,
+                {"id": 1, "phone": "+8613800138000", "session": "session"},
+                [{"type": "chat", "id": 123, "name": "测试群"}],
+                tg.parse_numbers("+8613911111111;张三"),
+                {
+                    "interval": 1,
+                    "batch_size": 20,
+                    "batch_pause": 0,
+                    "direct_send": True,
+                },
+            )
+
         prepare_contacts.assert_not_awaited()
+        self.assertEqual(task["ok"], 1)
 
     async def test_fresh_contact_cache_skips_phone_resolution(self):
         parsed = tg.parse_numbers("+8613911111111")
@@ -275,6 +314,45 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
         resolve_contacts.assert_not_awaited()
         self.assertEqual(users, {"8613911111111": (42, 99)})
         self.assertEqual(names, {"8613911111111": ("张三", "")})
+
+    async def test_resolved_but_never_imported_cache_is_imported_before_send(self):
+        parsed = tg.parse_numbers("+8613911111111;张三")
+        task = self.make_task(1)
+        fresh_resolved_cache = {
+            "8613911111111": {
+                "phone_digits": "8613911111111",
+                "user_id": 42,
+                "access_hash": "99",
+                "first_name": "张三",
+                "last_name": "",
+                "is_registered": True,
+                "is_imported": False,
+                "checked_at": int(tg.time.time()),
+            }
+        }
+
+        with (
+            mock.patch.object(
+                store,
+                "get_contact_cache",
+                side_effect=[fresh_resolved_cache, fresh_resolved_cache],
+            ),
+            mock.patch.object(
+                tg,
+                "_import_contacts",
+                return_value={"8613911111111": (42, 99)},
+            ) as import_contacts,
+        ):
+            users, _ = await tg._prepare_contacts(
+                mock.Mock(),
+                task,
+                1,
+                parsed,
+                add_to_contacts=True,
+            )
+
+        import_contacts.assert_awaited_once_with(mock.ANY, task, 1, parsed)
+        self.assertEqual(users, {"8613911111111": (42, 99)})
 
     async def test_resolve_phone_is_debounced_and_caches_profile_names(self):
         class ResolveClient:
@@ -324,6 +402,41 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names["8613911111111"], ("用户41", ""))
         self.assertEqual(cache_upsert.call_count, 2)
 
+    async def test_import_contacts_marks_numbers_as_imported(self):
+        class ImportClient:
+            def __init__(self):
+                self.request = None
+
+            async def __call__(self, request):
+                self.request = request
+                return mock.Mock(
+                    imported=[mock.Mock(client_id=0, user_id=42)],
+                    users=[
+                        mock.Mock(
+                            id=42,
+                            access_hash=99,
+                            phone="8613911111111",
+                        )
+                    ],
+                    retry_contacts=[],
+                )
+
+        client = ImportClient()
+        task = self.make_task(1)
+        with mock.patch.object(store, "upsert_contact_cache") as cache_upsert:
+            users = await tg._import_contacts(
+                client,
+                task,
+                1,
+                tg.parse_numbers("+8613911111111;张三"),
+            )
+
+        self.assertEqual(type(client.request).__name__, "ImportContactsRequest")
+        self.assertEqual(users, {"8613911111111": (42, 99)})
+        cached_rows = cache_upsert.call_args.args[1]
+        self.assertTrue(cached_rows[0]["is_imported"])
+        self.assertTrue(cached_rows[0]["is_registered"])
+
     async def test_lookup_runs_only_when_registration_filter_is_enabled(self):
         client = FakeClient()
         task = self.make_task(1)
@@ -352,6 +465,7 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
                     "batch_size": 20,
                     "batch_pause": 0,
                     "skip_unresolved": True,
+                    "direct_send": True,
                 },
             )
 
@@ -399,7 +513,12 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
                     {"type": "chat", "id": 456, "name": "正常群"},
                 ],
                 tg.parse_numbers("+8613911111111;张三"),
-                {"interval": 1, "batch_size": 20, "batch_pause": 0},
+                {
+                    "interval": 1,
+                    "batch_size": 20,
+                    "batch_pause": 0,
+                    "direct_send": True,
+                },
             )
 
         self.assertEqual(client.calls, [123, 456, 123])
@@ -425,7 +544,12 @@ class SafeSendingTests(unittest.IsolatedAsyncioTestCase):
                 {"id": 1, "phone": "+8613800138000", "session": "session"},
                 [{"type": "chat", "id": 123, "name": "测试群"}],
                 tg.parse_numbers("+8613911111111;张三"),
-                {"interval": 1, "batch_size": 20, "batch_pause": 0},
+                {
+                    "interval": 1,
+                    "batch_size": 20,
+                    "batch_pause": 0,
+                    "direct_send": True,
+                },
             )
 
         block_sending.assert_called_once_with(1, "PeerFloodError")

@@ -14,7 +14,8 @@ class PackagingAssetTests(unittest.TestCase):
         content = (ROOT / "static/index.html").read_text(encoding="utf-8")
         self.assertIn("补充 Telegram 姓名（缺少姓名时查询）", content)
         self.assertIn("过滤无法解析的号码（查询不到则跳过）", content)
-        self.assertIn("两项都不勾选时直接发送，速度最快", content)
+        self.assertIn("极速直发（不添加通讯录", content)
+        self.assertIn("默认发送前添加到 Telegram 通讯录", content)
 
     def test_application_imports_on_packaging_python(self):
         result = subprocess.run(
