@@ -58,6 +58,7 @@ def init_db():
                     first_name TEXT NOT NULL DEFAULT '',
                     last_name TEXT NOT NULL DEFAULT '',
                     is_registered INTEGER NOT NULL DEFAULT 0,
+                    is_imported INTEGER NOT NULL DEFAULT 0,
                     checked_at INTEGER NOT NULL,
                     PRIMARY KEY (account_id, phone_digits),
                     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
@@ -102,6 +103,17 @@ def init_db():
                 )
             if "last_check_at" not in cols:
                 conn.execute("ALTER TABLE accounts ADD COLUMN last_check_at INTEGER")
+            contact_cols = {
+                row["name"]
+                for row in conn.execute(
+                    "PRAGMA table_info(contact_cache)"
+                ).fetchall()
+            }
+            if "is_imported" not in contact_cols:
+                conn.execute(
+                    "ALTER TABLE contact_cache "
+                    "ADD COLUMN is_imported INTEGER NOT NULL DEFAULT 0"
+                )
             conn.commit()
         finally:
             conn.close()
@@ -286,7 +298,7 @@ def get_contact_cache(account_id, phone_digits_list):
             rows = conn.execute(
                 f"""
                 SELECT phone_digits, user_id, access_hash, first_name, last_name,
-                       is_registered, checked_at
+                       is_registered, is_imported, checked_at
                 FROM contact_cache
                 WHERE account_id = ? AND phone_digits IN ({placeholders})
                 """,
@@ -300,6 +312,7 @@ def get_contact_cache(account_id, phone_digits_list):
                     "first_name": row["first_name"] or "",
                     "last_name": row["last_name"] or "",
                     "is_registered": bool(row["is_registered"]),
+                    "is_imported": bool(row["is_imported"]),
                     "checked_at": row["checked_at"],
                 }
                 for row in rows
@@ -327,6 +340,7 @@ def upsert_contact_cache(account_id, contacts):
             str(contact.get("first_name") or ""),
             str(contact.get("last_name") or ""),
             1 if contact.get("is_registered") else 0,
+            1 if contact.get("is_imported") else 0,
             int(contact.get("checked_at") or now),
         )
         for contact in rows
@@ -338,8 +352,8 @@ def upsert_contact_cache(account_id, contacts):
                 """
                 INSERT INTO contact_cache(
                     account_id, phone_digits, user_id, access_hash,
-                    first_name, last_name, is_registered, checked_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    first_name, last_name, is_registered, is_imported, checked_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(account_id, phone_digits) DO UPDATE SET
                     user_id = excluded.user_id,
                     access_hash = excluded.access_hash,
@@ -352,6 +366,7 @@ def upsert_contact_cache(account_id, contacts):
                         ELSE contact_cache.last_name
                     END,
                     is_registered = excluded.is_registered,
+                    is_imported = MAX(contact_cache.is_imported, excluded.is_imported),
                     checked_at = excluded.checked_at
                 """,
                 values,

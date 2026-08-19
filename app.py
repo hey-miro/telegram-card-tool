@@ -168,6 +168,7 @@ class ShareOptions(BaseModel):
     batch_pause: float = Field(default=300, ge=0, le=3600)
     fetch_missing_names: bool = False
     skip_unresolved: bool = False
+    direct_send: bool = False
     allow_empty_name: bool = True
     fallback_first_name: str = ""
     fallback_last_name: str = ""

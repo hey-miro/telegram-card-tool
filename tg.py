@@ -22,13 +22,18 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import (
+    DeleteContactsRequest,
+    ImportContactsRequest,
     ResolvePhoneRequest,
 )
+from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import (
     InputMediaContact,
     InputPeerChannel,
     InputPeerChat,
     InputPeerUser,
+    InputPhoneContact,
+    InputUser,
 )
 
 import store
@@ -396,6 +401,117 @@ def _peer_from_target(target):
     raise ValueError(f"未知目标类型: {d_type}")
 
 
+async def _import_contacts(client, task, account_id, parsed, name_overrides=None):
+    """批量导入联系人，建立手机号与 Telegram 用户的关联。"""
+    overrides = name_overrides or {}
+    contacts = []
+    for number in parsed:
+        phone = number["phone"]
+        digits = re.sub(r"\D", "", phone)
+        if digits in overrides:
+            first, last = overrides[digits]
+        else:
+            first = number["first_name"] or f"联系人{phone[-4:]}"
+            last = number["last_name"] or ""
+        contacts.append((phone, first, last))
+
+    users = {}
+    batch_size = 50
+    for start in range(0, len(contacts), batch_size):
+        chunk = contacts[start : start + batch_size]
+        try:
+            response = await asyncio.wait_for(
+                client(
+                    ImportContactsRequest(
+                        [
+                            InputPhoneContact(
+                                client_id=start + index,
+                                phone=phone,
+                                first_name=first,
+                                last_name=last,
+                            )
+                            for index, (phone, first, last) in enumerate(chunk)
+                        ]
+                    )
+                ),
+                timeout=60,
+            )
+        except FloodWaitError:
+            raise
+        except (RPCError, asyncio.TimeoutError) as exc:
+            _log(
+                task,
+                "warn",
+                f"通讯录导入第 {start // batch_size + 1} 批失败"
+                f"({type(exc).__name__})，相关名片可能没有“发消息”按钮",
+            )
+            continue
+
+        chunk_by_client_id = {
+            start + index: re.sub(r"\D", "", phone)
+            for index, (phone, _, _) in enumerate(chunk)
+        }
+        response_users = {
+            getattr(user, "id", None): user
+            for user in (getattr(response, "users", []) or [])
+        }
+        resolved_phones = set()
+        cache_rows = []
+        for imported in getattr(response, "imported", []) or []:
+            digits = chunk_by_client_id.get(getattr(imported, "client_id", None))
+            user = response_users.get(getattr(imported, "user_id", None))
+            if not digits or user is None:
+                continue
+            users[digits] = (user.id, user.access_hash)
+            resolved_phones.add(digits)
+            cache_rows.append(
+                {
+                    "phone_digits": digits,
+                    "user_id": user.id,
+                    "access_hash": user.access_hash,
+                    "is_registered": True,
+                    "is_imported": True,
+                }
+            )
+
+        # 兼容 imported 信息不完整、但 users 中带回手机号的情况。
+        for user in getattr(response, "users", []) or []:
+            digits = re.sub(r"\D", "", str(getattr(user, "phone", None) or ""))
+            if not digits:
+                continue
+            users[digits] = (user.id, user.access_hash)
+            if digits not in resolved_phones:
+                resolved_phones.add(digits)
+                cache_rows.append(
+                    {
+                        "phone_digits": digits,
+                        "user_id": user.id,
+                        "access_hash": user.access_hash,
+                        "is_registered": True,
+                        "is_imported": True,
+                    }
+                )
+
+        retry_ids = set(getattr(response, "retry_contacts", []) or [])
+        for client_id, digits in chunk_by_client_id.items():
+            if digits not in resolved_phones and client_id not in retry_ids:
+                cache_rows.append(
+                    {
+                        "phone_digits": digits,
+                        "is_registered": False,
+                        "is_imported": True,
+                    }
+                )
+        store.upsert_contact_cache(account_id, cache_rows)
+        if retry_ids:
+            _log(
+                task,
+                "warn",
+                f"本批有 {len(retry_ids)} 个号码被 Telegram 要求稍后重试",
+            )
+    return users
+
+
 async def _resolve_contacts(client, task, account_id, parsed):
     """在不导入通讯录的前提下查询手机号。
 
@@ -478,6 +594,7 @@ async def _resolve_contacts(client, task, account_id, parsed):
                     "first_name": first,
                     "last_name": last,
                     "is_registered": True,
+                    "is_imported": False,
                 }
             ],
         )
@@ -491,8 +608,9 @@ async def _prepare_contacts(
     account_id,
     parsed,
     require_profile_names=False,
+    add_to_contacts=False,
 ):
-    """Resolve only uncached/stale contacts and reuse fresh local results."""
+    """复用缓存，并按模式导入通讯录或只查询手机号。"""
     now = int(time.time())
     phone_digits = [re.sub(r"\D", "", item["phone"]) for item in parsed]
     cached = store.get_contact_cache(account_id, phone_digits)
@@ -514,7 +632,11 @@ async def _prepare_contacts(
             and row["is_registered"]
             and not (row["first_name"] or row["last_name"])
         )
-        if not row or now - row["checked_at"] > ttl or missing_required_name:
+        stale = bool(row and now - row["checked_at"] > ttl)
+        missing_contact_link = bool(
+            add_to_contacts and row and not row.get("is_imported", False)
+        )
+        if not row or stale or missing_required_name or missing_contact_link:
             unresolved.append(item)
             continue
         if (
@@ -530,14 +652,115 @@ async def _prepare_contacts(
     if cache_hits:
         _log(task, "info", f"联系人缓存命中 {cache_hits}/{len(parsed)} 个号码")
     if unresolved:
-        _log(task, "info", f"慢速预处理 {len(unresolved)} 个新增或已过期号码")
-        resolved_users, resolved_names = await _resolve_contacts(
-            client, task, account_id, unresolved
-        )
+        if add_to_contacts:
+            _log(task, "info", f"导入通讯录 {len(unresolved)} 个新增或待恢复关联号码")
+            resolved_users = await _import_contacts(
+                client, task, account_id, unresolved
+            )
+            resolved_names = {}
+        else:
+            _log(task, "info", f"慢速预处理 {len(unresolved)} 个新增或已过期号码")
+            resolved_users, resolved_names = await _resolve_contacts(
+                client, task, account_id, unresolved
+            )
         users.update(resolved_users)
         profile_names.update(resolved_names)
 
+        refreshed = store.get_contact_cache(account_id, phone_digits)
+        for digits, row in refreshed.items():
+            if (
+                row["is_registered"]
+                and row["user_id"] is not None
+                and row["access_hash"] is not None
+            ):
+                users[digits] = (row["user_id"], int(row["access_hash"]))
+            if row["first_name"] or row["last_name"]:
+                profile_names[digits] = (row["first_name"], row["last_name"])
+
     return users, profile_names
+
+
+async def _fetch_profile_names(client, task, account_id, users):
+    """临时删除联系人备注后读取资料姓名，然后立即恢复关联。"""
+    if not users:
+        return {}
+
+    input_users = [
+        InputUser(user_id=user_id, access_hash=access_hash)
+        for user_id, access_hash in users.values()
+    ]
+    phones_by_uid = {
+        user_id: phone for phone, (user_id, _) in users.items()
+    }
+    profile_names = {}
+    pending_flood = None
+    try:
+        for start in range(0, len(input_users), 50):
+            await asyncio.wait_for(
+                client(DeleteContactsRequest(id=input_users[start : start + 50])),
+                timeout=60,
+            )
+        for start in range(0, len(input_users), 50):
+            response = await asyncio.wait_for(
+                client(GetUsersRequest(id=input_users[start : start + 50])),
+                timeout=60,
+            )
+            for user in response or []:
+                digits = phones_by_uid.get(getattr(user, "id", None))
+                if not digits:
+                    continue
+                first = getattr(user, "first_name", None) or ""
+                last = getattr(user, "last_name", None) or ""
+                if first or last:
+                    profile_names[digits] = (first, last)
+    except FloodWaitError as exc:
+        pending_flood = exc
+    except (RPCError, asyncio.TimeoutError) as exc:
+        _log(
+            task,
+            "warn",
+            f"拉取 Telegram 资料姓名失败({type(exc).__name__})，将使用其他命名规则",
+        )
+    finally:
+        restore_names = {
+            phone: profile_names.get(phone, (f"联系人{phone[-4:]}", ""))
+            for phone in users
+        }
+        await _reimport_with_names(client, task, restore_names)
+
+    if pending_flood is not None:
+        raise pending_flood
+    if profile_names:
+        store.update_cached_contact_names(account_id, profile_names)
+    return profile_names
+
+
+async def _reimport_with_names(client, task, profile_names):
+    """按资料姓名重新导入，确保发送前已恢复号码关联。"""
+    contacts = [
+        InputPhoneContact(
+            client_id=index,
+            phone=f"+{phone}",
+            first_name=first,
+            last_name=last,
+        )
+        for index, (phone, (first, last)) in enumerate(profile_names.items())
+    ]
+    for start in range(0, len(contacts), 50):
+        try:
+            await asyncio.wait_for(
+                client(ImportContactsRequest(contacts[start : start + 50])),
+                timeout=60,
+            )
+        except FloodWaitError:
+            raise
+        except (RPCError, asyncio.TimeoutError) as exc:
+            _log(
+                task,
+                "warn",
+                f"恢复通讯录关联第 {start // 50 + 1} 批失败"
+                f"({type(exc).__name__})，相关名片可能没有“发消息”按钮",
+            )
 
 
 async def _sleep_or_stop(seconds, stop_event):
@@ -752,6 +975,7 @@ async def _run_share(task, account, targets, parsed, options):
     batch_pause = max(0.0, float(options.get("batch_pause", 300)))
     fetch_names = bool(options.get("fetch_missing_names", False))
     skip_unresolved = bool(options.get("skip_unresolved", False))
+    direct_send = bool(options.get("direct_send", False))
     allow_empty = bool(options.get("allow_empty_name", True))
     fallback_first = str(options.get("fallback_first_name", "") or "")
     fallback_last = str(options.get("fallback_last_name", "") or "")
@@ -781,16 +1005,7 @@ async def _run_share(task, account, targets, parsed, options):
 
         users = {}
         profile_names = {}
-        lookup_parsed = (
-            parsed
-            if skip_unresolved
-            else [
-                item
-                for item in parsed
-                if fetch_names and not (item["first_name"] or item["last_name"])
-            ]
-        )
-        if lookup_parsed:
+        if not direct_send:
             prepare_attempt = 0
             while True:
                 try:
@@ -798,8 +1013,8 @@ async def _run_share(task, account, targets, parsed, options):
                         client,
                         task,
                         account["id"],
-                        lookup_parsed,
-                        require_profile_names=fetch_names,
+                        parsed,
+                        add_to_contacts=True,
                     )
                     break
                 except FloodWaitError as exc:
@@ -808,18 +1023,95 @@ async def _run_share(task, account, targets, parsed, options):
                         task,
                         account["id"],
                         exc,
-                        "号码预处理",
+                        "通讯录导入",
                         prepare_attempt,
-                        "contacts.resolvePhone",
+                        "contacts.importContacts",
                     ):
                         return
             _log(
                 task,
                 "info",
-                f"号码预处理完成：{len(users)}/{len(lookup_parsed)} 个号码可解析",
+                f"通讯录准备完成：{len(users)}/{len(parsed)} 个号码已关联 Telegram 账号",
             )
+
+            if fetch_names and users:
+                input_named_phones = {
+                    re.sub(r"\D", "", item["phone"])
+                    for item in parsed
+                    if item["first_name"] or item["last_name"]
+                }
+                users_needing_names = {
+                    digits: user
+                    for digits, user in users.items()
+                    if digits not in profile_names
+                    and digits not in input_named_phones
+                }
+                fetch_attempt = 0
+                while users_needing_names:
+                    try:
+                        fetched_names = await _fetch_profile_names(
+                            client,
+                            task,
+                            account["id"],
+                            users_needing_names,
+                        )
+                        profile_names.update(fetched_names)
+                        break
+                    except FloodWaitError as exc:
+                        fetch_attempt += 1
+                        if not await _handle_rate_limit(
+                            task,
+                            account["id"],
+                            exc,
+                            "资料姓名查询",
+                            fetch_attempt,
+                            "contacts.deleteContacts/users.getUsers/contacts.importContacts",
+                        ):
+                            return
         else:
-            _log(task, "info", "直接发送模式：已跳过通讯录导入和手机号查询")
+            lookup_parsed = (
+                parsed
+                if skip_unresolved
+                else [
+                    item
+                    for item in parsed
+                    if fetch_names and not (item["first_name"] or item["last_name"])
+                ]
+            )
+            if lookup_parsed:
+                prepare_attempt = 0
+                while True:
+                    try:
+                        users, profile_names = await _prepare_contacts(
+                            client,
+                            task,
+                            account["id"],
+                            lookup_parsed,
+                            require_profile_names=fetch_names,
+                        )
+                        break
+                    except FloodWaitError as exc:
+                        prepare_attempt += 1
+                        if not await _handle_rate_limit(
+                            task,
+                            account["id"],
+                            exc,
+                            "号码预处理",
+                            prepare_attempt,
+                            "contacts.resolvePhone",
+                        ):
+                            return
+                _log(
+                    task,
+                    "info",
+                    f"号码预处理完成：{len(users)}/{len(lookup_parsed)} 个号码可解析",
+                )
+            else:
+                _log(
+                    task,
+                    "warn",
+                    "极速直发：已跳过通讯录导入，名片可能没有“发消息”按钮",
+                )
 
         registered = set(users.keys())
 
