@@ -613,6 +613,7 @@ function bindEvents() {
       batch_pause: parseFloat(el("batchPause").value) || 0,
       fetch_missing_names: el("fetchNames").checked,
       skip_unresolved: el("skipUnresolved").checked,
+      direct_send: el("directSend").checked,
       allow_empty_name: el("allowEmpty").checked,
       fallback_first_name: el("fallbackFirst").value.trim(),
       fallback_last_name: el("fallbackLast").value.trim(),

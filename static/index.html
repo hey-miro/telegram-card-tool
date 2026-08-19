@@ -196,11 +196,15 @@
                 <span>过滤无法解析的号码（查询不到则跳过）</span>
               </label>
               <label class="check">
+                <input id="directSend" type="checkbox" />
+                <span>极速直发（不添加通讯录，名片可能无“发消息”按钮）</span>
+              </label>
+              <label class="check">
                 <input id="allowEmpty" type="checkbox" checked />
                 <span>无姓名自动命名</span>
               </label>
             </div>
-            <p class="hint">号码查询约每 3 秒一个；两项都不勾选时直接发送，速度最快。无法解析也可能是对方隐藏了手机号。</p>
+            <p class="hint">默认发送前添加到 Telegram 通讯录，让名片尽可能带“发消息”按钮；只有手动勾选“极速直发”才会跳过导入。</p>
 
             <div class="compose-actions">
               <button id="startShareBtn" class="btn btn-primary">
