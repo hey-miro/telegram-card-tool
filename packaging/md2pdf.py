@@ -17,9 +17,15 @@ body = markdown.markdown(
 
 CSS = """
 @page { size: A4; margin: 18mm 16mm; }
+@font-face {
+  font-family: "CardToolCJK";
+  src: local("Arial Unicode MS"), url("file:///Library/Fonts/Arial Unicode.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+}
 * { box-sizing: border-box; }
 body {
-  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: "CardToolCJK", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: 12.5px; line-height: 1.75; color: #24292f; margin: 0;
 }
 h1 {
@@ -41,7 +47,7 @@ blockquote {
 }
 blockquote p { margin: 3px 0; }
 code {
-  font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
+  font-family: "CardToolCJK", "SF Mono", Menlo, Consolas, monospace; font-size: 11px;
   background: #f2f2f2; padding: 1px 5px; border-radius: 3px; color: #c7254e;
 }
 pre { background: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; }
