@@ -11,6 +11,8 @@ APP_NAME="Telegram名片工具"
 ARM_APP="dist-arm64/${APP_NAME}.app"
 X86_APP="dist-x86/${APP_NAME}.app"
 OUT_APP="dist-universal/${APP_NAME}.app"
+PDF_GUIDE="$SCRIPT_DIR/packaging/Telegram名片工具-使用文档.pdf"
+PACKAGE_DIR="dist/${APP_NAME}-macOS-universal"
 
 # 清理旧构建产物:移到废纸篓而不是 rm(更安全,也避免批量删除拦截)
 trash_dir() {
@@ -31,6 +33,7 @@ PYINSTALLER_ARGS=(
   --name "$APP_NAME"
   --osx-bundle-identifier "com.yuzhitongtong.telegram-card-tool"
   --add-data "static:static"
+  --add-data "$PDF_GUIDE:."
   --collect-all telethon
 )
 if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then
@@ -42,6 +45,7 @@ trash_dir "dist-x86"
 trash_dir "dist-universal"
 trash_dir "build/arm64"
 trash_dir "build/x86"
+trash_dir "$PACKAGE_DIR"
 
 echo "==> [1/4] 构建 arm64 (Apple Silicon) ..."
 ./venv/bin/python -m PyInstaller "${PYINSTALLER_ARGS[@]}" \
@@ -79,7 +83,10 @@ echo "==> [4/4] 临时签名 (ad-hoc) 并打包 zip ..."
 # 合并后必须重新签名,否则 macOS 拒绝加载混合架构的二进制
 codesign --force --deep --sign - "$OUT_APP" >/dev/null 2>&1
 
-ditto -c -k --keepParent "$OUT_APP" "dist/${APP_NAME}-macOS-universal.zip"
+mkdir -p "$PACKAGE_DIR"
+ditto "$OUT_APP" "$PACKAGE_DIR/${APP_NAME}.app"
+cp "$PDF_GUIDE" "$PACKAGE_DIR/Telegram名片工具-使用文档.pdf"
+ditto -c -k --keepParent "$PACKAGE_DIR" "dist/${APP_NAME}-macOS-universal.zip"
 
 echo "架构验证:"
 lipo -info "$OUT_APP/Contents/MacOS/$APP_NAME"

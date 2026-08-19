@@ -27,6 +27,7 @@ venv\Scripts\python.exe -m PyInstaller ^
   --windowed ^
   --name "TelegramCardTool" ^
   --add-data "static;static" ^
+  --add-data "packaging\Telegram名片工具-使用文档.pdf;." ^
   --collect-all telethon ^
   desktop.py
 
@@ -37,6 +38,12 @@ if errorlevel 1 (
 )
 
 REM ===== 打包 zip =====
+copy /Y "packaging\Telegram名片工具-使用文档.pdf" "dist\TelegramCardTool\Telegram名片工具-使用文档.pdf" >nul
+if errorlevel 1 (
+  echo [ERROR] Failed to copy PDF guide!
+  exit /b 1
+)
+
 echo Zipping output...
 powershell -NoProfile -Command "Compress-Archive -Path 'dist\TelegramCardTool\*' -DestinationPath 'dist\TelegramCardTool-Windows-x64.zip' -Force"
 

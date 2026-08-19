@@ -156,7 +156,9 @@ class ShareTarget(BaseModel):
 
 class ShareOptions(BaseModel):
     rounds: int = Field(default=1, ge=1, le=100)
-    interval: float = Field(default=8, ge=0, le=3600)
+    interval: float = Field(default=15, ge=1, le=3600)
+    batch_size: int = Field(default=20, ge=1, le=100)
+    batch_pause: float = Field(default=300, ge=0, le=3600)
     fetch_missing_names: bool = False
     skip_unresolved: bool = False
     allow_empty_name: bool = True

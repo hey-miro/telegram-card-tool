@@ -1,7 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('static', 'static')]
+datas = [
+    ('static', 'static'),
+    ('packaging/Telegram名片工具-使用文档.pdf', '.'),
+]
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('telethon')
