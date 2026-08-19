@@ -189,18 +189,18 @@
               </label>
               <label class="check">
                 <input id="fetchNames" type="checkbox" />
-                <span>慢速获取 Telegram 资料姓名（最多每 3 秒 1 个）</span>
+                <span>补充 Telegram 姓名（缺少姓名时查询）</span>
               </label>
               <label class="check">
                 <input id="skipUnresolved" type="checkbox" />
-                <span>跳过未解析/不可见号码（会慢速查询）</span>
+                <span>过滤无法解析的号码（查询不到则跳过）</span>
               </label>
               <label class="check">
                 <input id="allowEmpty" type="checkbox" checked />
                 <span>无姓名自动命名</span>
               </label>
             </div>
-            <p class="hint">不勾选上述两项查询功能时，工具会直接发送名片，不导入 Telegram 通讯录。</p>
+            <p class="hint">号码查询约每 3 秒一个；两项都不勾选时直接发送，速度最快。无法解析也可能是对方隐藏了手机号。</p>
 
             <div class="compose-actions">
               <button id="startShareBtn" class="btn btn-primary">
