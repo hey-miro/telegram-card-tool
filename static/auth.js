@@ -142,6 +142,7 @@ async function activate() {
     });
     toast("激活成功");
     await loadStatus();
+    enterApp();
   } catch (error) {
     errorEl.textContent = error.message;
     toast(error.message, true);

@@ -189,17 +189,18 @@
               </label>
               <label class="check">
                 <input id="fetchNames" type="checkbox" />
-                <span>自动获取对方 Telegram 账号姓名</span>
+                <span>慢速获取 Telegram 资料姓名（最多每 3 秒 1 个）</span>
               </label>
               <label class="check">
                 <input id="skipUnresolved" type="checkbox" />
-                <span>跳过未注册号码</span>
+                <span>跳过未解析/不可见号码（会慢速查询）</span>
               </label>
               <label class="check">
                 <input id="allowEmpty" type="checkbox" checked />
                 <span>无姓名自动命名</span>
               </label>
             </div>
+            <p class="hint">不勾选上述两项查询功能时，工具会直接发送名片，不导入 Telegram 通讯录。</p>
 
             <div class="compose-actions">
               <button id="startShareBtn" class="btn btn-primary">

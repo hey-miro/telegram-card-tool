@@ -103,16 +103,25 @@ async function loadAccounts() {
 }
 
 function accountStatusBadge(account) {
+  let status;
   if (!account.has_session) {
-    return '<span class="badge badge-muted">无会话</span>';
+    status = '<span class="badge badge-muted">无会话</span>';
+  } else if (account.status === "valid") {
+    status = '<span class="badge badge-ok">正常</span>';
+  } else if (account.status === "invalid") {
+    status = '<span class="badge badge-danger">失效</span>';
+  } else {
+    status = '<span class="badge badge-muted">未验证</span>';
   }
-  if (account.status === "valid") {
-    return '<span class="badge badge-ok">正常</span>';
+  if (account.send_blocked) {
+    status += ' <span class="badge badge-danger">发送熔断</span>';
+  } else if (
+    account.cooldown_until &&
+    account.cooldown_until > Math.floor(Date.now() / 1000)
+  ) {
+    status += ' <span class="badge badge-muted">限流冷却</span>';
   }
-  if (account.status === "invalid") {
-    return '<span class="badge badge-danger">失效</span>';
-  }
-  return '<span class="badge badge-muted">未验证</span>';
+  return status;
 }
 
 function renderAccounts() {
@@ -132,6 +141,11 @@ function renderAccounts() {
               <button class="btn btn-secondary" data-action="verify" data-id="${
                 account.id
               }">验证</button>
+              ${
+                account.send_blocked
+                  ? `<button class="btn btn-secondary" data-action="clear-guard" data-id="${account.id}">解除发送熔断</button>`
+                  : ""
+              }
               <button class="btn btn-danger" data-action="remove" data-id="${
                 account.id
               }">移除</button>
@@ -507,6 +521,22 @@ function bindEvents() {
       } finally {
         button.disabled = false;
         button.textContent = "验证";
+      }
+    } else if (button.dataset.action === "clear-guard") {
+      if (
+        !window.confirm(
+          "请先在 @SpamBot 确认账号已恢复。确定解除本地发送熔断？",
+        )
+      )
+        return;
+      try {
+        await api(`/api/accounts/${accountId}/send-guard/clear`, {
+          method: "POST",
+        });
+        await loadAccounts();
+        toast("已解除本地发送熔断");
+      } catch (error) {
+        toast(error.message, true);
       }
     } else if (button.dataset.action === "remove") {
       if (!window.confirm("确认移除该账号及其本地会话？")) return;
