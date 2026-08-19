@@ -45,12 +45,14 @@ jobs:
             --windowed `
             --name "TelegramCardTool" `
             --add-data "static;static" `
+            --add-data "packaging\Telegram名片工具-使用文档.pdf;." `
             --collect-all telethon `
             desktop.py
 
       - name: Zip artifact
         shell: pwsh
         run: |
+          Copy-Item "packaging\Telegram名片工具-使用文档.pdf" "dist\TelegramCardTool\Telegram名片工具-使用文档.pdf" -Force
           Compress-Archive -Path "dist\TelegramCardTool\*" -DestinationPath "dist\TelegramCardTool-Windows-x64.zip"
 
       - name: Upload artifact
