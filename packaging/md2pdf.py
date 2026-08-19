@@ -26,7 +26,7 @@ CSS = """
 * { box-sizing: border-box; }
 body {
   font-family: "CardToolCJK", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  font-size: 12.5px; line-height: 1.75; color: #24292f; margin: 0;
+  font-size: 12.5px; line-height: 1.68; color: #24292f; margin: 0;
 }
 h1 {
   font-size: 26px; color: #0f5fbf; text-align: center;
@@ -34,7 +34,7 @@ h1 {
 }
 h2 {
   font-size: 17px; color: #0f5fbf; border-left: 5px solid #0f5fbf;
-  background: #eef4fd; padding: 7px 12px; margin: 26px 0 12px 0;
+  background: #eef4fd; padding: 7px 12px; margin: 22px 0 10px 0;
   border-radius: 4px; page-break-after: avoid;
 }
 h3 { font-size: 14.5px; color: #1a1a1a; margin: 18px 0 8px 0; page-break-after: avoid; }
