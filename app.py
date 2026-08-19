@@ -59,7 +59,14 @@ app = FastAPI(title="Telegram 名片分享与群组工具")
 @app.middleware("http")
 async def license_middleware(request: Request, call_next):
     path = request.url.path
-    public_paths = {"/", "/api/health", "/api/license/status", "/api/license/activate", "/api/license/refresh", "/api/license/clear"}
+    public_paths = {
+        "/",
+        "/api/health",
+        "/api/license/status",
+        "/api/license/activate",
+        "/api/license/refresh",
+        "/api/license/clear",
+    }
     if path.startswith("/static/") or path in public_paths:
         return await call_next(request)
 
@@ -258,6 +265,15 @@ async def import_account(body: ImportIn):
 async def verify_account(account_id: int):
     try:
         return await tg.verify_account(account_id)
+    except Exception as exc:
+        _handle(exc)
+
+
+@app.post("/api/accounts/{account_id}/send-guard/clear")
+async def clear_account_send_guard(account_id: int):
+    try:
+        tg.clear_account_send_block(account_id)
+        return {"ok": True}
     except Exception as exc:
         _handle(exc)
 

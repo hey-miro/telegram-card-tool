@@ -1,4 +1,5 @@
 import asyncio
+import heapq
 import math
 import re
 import time
@@ -9,6 +10,7 @@ from telethon.errors import (
     AuthKeyUnregisteredError,
     FloodWaitError,
     PasswordHashInvalidError,
+    PhoneNotOccupiedError,
     PhoneCodeEmptyError,
     PhoneCodeExpiredError,
     PhoneCodeInvalidError,
@@ -20,17 +22,13 @@ from telethon.errors import (
 )
 from telethon.sessions import StringSession
 from telethon.tl.functions.contacts import (
-    DeleteContactsRequest,
-    ImportContactsRequest,
+    ResolvePhoneRequest,
 )
-from telethon.tl.functions.users import GetUsersRequest
 from telethon.tl.types import (
     InputMediaContact,
     InputPeerChannel,
     InputPeerChat,
     InputPeerUser,
-    InputPhoneContact,
-    InputUser,
 )
 
 import store
@@ -45,6 +43,12 @@ REGISTERED_CACHE_TTL = 30 * 24 * 60 * 60
 UNREGISTERED_CACHE_TTL = 3 * 24 * 60 * 60
 MAX_AUTO_FLOOD_WAIT = 60 * 60
 MAX_FLOOD_RETRIES_PER_MESSAGE = 2
+MAX_SLOWMODE_RETRIES_PER_MESSAGE = 5
+RESOLVE_PHONE_MIN_INTERVAL = 3.0
+
+
+def _monotonic():
+    return time.monotonic()
 
 
 def normalize_phone(raw):
@@ -88,7 +92,11 @@ def parse_numbers(text):
 
 def _proxy_tuple(cfg):
     """根据配置构造 Telethon 代理参数，未启用或缺少地址时返回 None."""
-    if not cfg.get("proxy_enabled") or not cfg.get("proxy_host") or not cfg.get("proxy_port"):
+    if (
+        not cfg.get("proxy_enabled")
+        or not cfg.get("proxy_host")
+        or not cfg.get("proxy_port")
+    ):
         return None
     try:
         port = int(cfg["proxy_port"])
@@ -257,7 +265,9 @@ async def import_session(phone, session_string):
             await client.disconnect()
         except Exception:
             pass
-        raise ValueError("连接 Telegram 超时（30 秒）：网络不通或需要代理，请检查网络后重试")
+        raise ValueError(
+            "连接 Telegram 超时（30 秒）：网络不通或需要代理，请检查网络后重试"
+        )
     try:
         me = await asyncio.wait_for(client.get_me(), timeout=30)
         if me is None:
@@ -286,7 +296,9 @@ async def verify_account(account_id):
             await client.disconnect()
         except Exception:
             pass
-        raise ValueError("连接 Telegram 超时（30 秒）：网络不通或需要代理，请检查网络后重试")
+        raise ValueError(
+            "连接 Telegram 超时（30 秒）：网络不通或需要代理，请检查网络后重试"
+        )
     try:
         me = await asyncio.wait_for(client.get_me(), timeout=30)
         if me is None:
@@ -384,128 +396,102 @@ def _peer_from_target(target):
     raise ValueError(f"未知目标类型: {d_type}")
 
 
-async def _import_contacts(client, task, account_id, parsed, name_overrides=None):
-    """把号码批量导入当前账号的 Telegram 通讯录。
+async def _resolve_contacts(client, task, account_id, parsed):
+    """在不导入通讯录的前提下查询手机号。
 
-    作用：
-    1. 让 Telegram 建立号码 → 用户的关联，发出的名片会自动带头像/姓名（完整卡片样式）
-    2. 顺带检测每个号码是否注册了 Telegram（返回结果只含已注册号码）
-
-    name_overrides: {纯数字号码: (first, last)}，导入时优先使用的姓名。
-
-    返回 {纯数字号码: (user_id, access_hash)}，仅包含已注册 Telegram 的号码。
+    Telegram 官方要求 contacts.resolvePhone 最多每 3 秒调用一次。
+    PHONE_NOT_OCCUPIED 也可能由对方的手机号隐私设置导致，因此日志中使用
+    “未解析/不可见”，不宣称对方绝对未注册。
     """
-    overrides = name_overrides or {}
-    contacts = []
-    for idx, number in enumerate(parsed):
-        phone = number["phone"]
-        digits = re.sub(r"\D", "", phone)
-        if digits in overrides:
-            first, last = overrides[digits]
-        else:
-            first = number["first_name"] or f"联系人{phone[-4:]}"
-            last = number["last_name"] or ""
-        contacts.append((idx, phone, first, last))
-
     users = {}
-    batch_size = 50
-    for start in range(0, len(contacts), batch_size):
-        chunk = contacts[start : start + batch_size]
-        try:
-            resp = await asyncio.wait_for(
-                client(
-                    ImportContactsRequest(
-                        [
-                            InputPhoneContact(
-                                client_id=start + j,
-                                phone=phone,
-                                first_name=first,
-                                last_name=last,
-                            )
-                            for j, (_, phone, first, last) in enumerate(chunk)
-                        ]
+    profile_names = {}
+    last_request_at = None
+
+    for index, item in enumerate(parsed):
+        if task["stop"].is_set():
+            break
+        if last_request_at is not None:
+            remaining = RESOLVE_PHONE_MIN_INTERVAL - (_monotonic() - last_request_at)
+            if remaining > 0:
+                if index == 1:
+                    _log(
+                        task, "info", "号码预处理按 Telegram 官方要求限速为每 3 秒 1 次"
                     )
-                ),
-                timeout=60,
+                await _sleep_or_stop(remaining, task["stop"])
+                if task["stop"].is_set():
+                    break
+
+        phone = item["phone"]
+        digits = re.sub(r"\D", "", phone)
+        last_request_at = _monotonic()
+        try:
+            response = await asyncio.wait_for(
+                client(ResolvePhoneRequest(phone=phone)), timeout=60
             )
+        except PhoneNotOccupiedError:
+            store.upsert_contact_cache(
+                account_id,
+                [{"phone_digits": digits, "is_registered": False}],
+            )
+            _log(task, "info", f"{mask_phone(phone)} 未解析或受隐私设置限制")
+            continue
         except FloodWaitError:
             raise
         except (RPCError, asyncio.TimeoutError) as exc:
             _log(
                 task,
                 "warn",
-                f"通讯录导入第 {start // batch_size + 1} 批失败({type(exc).__name__})，相关名片可能无头像",
+                f"查询 {mask_phone(phone)} 失败({type(exc).__name__})，本次不更新缓存",
             )
             continue
-        chunk_by_client_id = {
-            start + j: re.sub(r"\D", "", phone)
-            for j, (_, phone, _, _) in enumerate(chunk)
-        }
-        response_users = {
-            getattr(user, "id", None): user
-            for user in (getattr(resp, "users", []) or [])
-        }
-        resolved_phones = set()
-        cache_rows = []
-        for imported in getattr(resp, "imported", []) or []:
-            phone_digits = chunk_by_client_id.get(
-                getattr(imported, "client_id", None)
-            )
-            user = response_users.get(getattr(imported, "user_id", None))
-            if not phone_digits or user is None:
-                continue
-            users[phone_digits] = (user.id, user.access_hash)
-            resolved_phones.add(phone_digits)
-            cache_rows.append(
+
+        response_users = list(getattr(response, "users", []) or [])
+        peer = getattr(response, "peer", None)
+        peer_user_id = getattr(peer, "user_id", None)
+        user = next(
+            (
+                candidate
+                for candidate in response_users
+                if peer_user_id is None
+                or getattr(candidate, "id", None) == peer_user_id
+            ),
+            response_users[0] if response_users else None,
+        )
+        user_id = getattr(user, "id", None)
+        access_hash = getattr(user, "access_hash", None)
+        if user_id is None or access_hash is None:
+            _log(task, "warn", f"{mask_phone(phone)} 已返回但缺少可缓存的 peer 信息")
+            continue
+
+        first = getattr(user, "first_name", None) or ""
+        last = getattr(user, "last_name", None) or ""
+        users[digits] = (user_id, access_hash)
+        if first or last:
+            profile_names[digits] = (first, last)
+        store.upsert_contact_cache(
+            account_id,
+            [
                 {
-                    "phone_digits": phone_digits,
-                    "user_id": user.id,
-                    "access_hash": user.access_hash,
-                    # importContacts 返回的姓名可能是本地备注，不当作账号资料名缓存。
-                    "first_name": "",
-                    "last_name": "",
+                    "phone_digits": digits,
+                    "user_id": user_id,
+                    "access_hash": access_hash,
+                    "first_name": first,
+                    "last_name": last,
                     "is_registered": True,
                 }
-            )
+            ],
+        )
 
-        # 兼容 Telegram 只在 users 中返回号码、imported 信息不完整的情况。
-        for user in getattr(resp, "users", []) or []:
-            uphone = re.sub(r"\D", "", str(getattr(user, "phone", None) or ""))
-            if uphone:
-                users[uphone] = (user.id, user.access_hash)
-                if uphone not in resolved_phones:
-                    resolved_phones.add(uphone)
-                    cache_rows.append(
-                        {
-                            "phone_digits": uphone,
-                            "user_id": user.id,
-                            "access_hash": user.access_hash,
-                            "first_name": "",
-                            "last_name": "",
-                            "is_registered": True,
-                        }
-                    )
-
-        retry_ids = set(getattr(resp, "retry_contacts", []) or [])
-        for client_id, phone_digits in chunk_by_client_id.items():
-            if phone_digits not in resolved_phones and client_id not in retry_ids:
-                cache_rows.append(
-                    {
-                        "phone_digits": phone_digits,
-                        "is_registered": False,
-                    }
-                )
-        store.upsert_contact_cache(account_id, cache_rows)
-        if retry_ids:
-            _log(
-                task,
-                "warn",
-                f"本批有 {len(retry_ids)} 个号码被 Telegram 要求稍后重试，未写入未注册缓存",
-            )
-    return users
+    return users, profile_names
 
 
-async def _prepare_contacts(client, task, account_id, parsed):
+async def _prepare_contacts(
+    client,
+    task,
+    account_id,
+    parsed,
+    require_profile_names=False,
+):
     """Resolve only uncached/stale contacts and reuse fresh local results."""
     now = int(time.time())
     phone_digits = [re.sub(r"\D", "", item["phone"]) for item in parsed]
@@ -517,11 +503,25 @@ async def _prepare_contacts(client, task, account_id, parsed):
     for item in parsed:
         digits = re.sub(r"\D", "", item["phone"])
         row = cached.get(digits)
-        ttl = REGISTERED_CACHE_TTL if row and row["is_registered"] else UNREGISTERED_CACHE_TTL
-        if not row or now - row["checked_at"] > ttl:
+        ttl = (
+            REGISTERED_CACHE_TTL
+            if row and row["is_registered"]
+            else UNREGISTERED_CACHE_TTL
+        )
+        missing_required_name = bool(
+            require_profile_names
+            and row
+            and row["is_registered"]
+            and not (row["first_name"] or row["last_name"])
+        )
+        if not row or now - row["checked_at"] > ttl or missing_required_name:
             unresolved.append(item)
             continue
-        if row["is_registered"] and row["user_id"] is not None and row["access_hash"] is not None:
+        if (
+            row["is_registered"]
+            and row["user_id"] is not None
+            and row["access_hash"] is not None
+        ):
             users[digits] = (row["user_id"], int(row["access_hash"]))
             if row["first_name"] or row["last_name"]:
                 profile_names[digits] = (row["first_name"], row["last_name"])
@@ -530,104 +530,14 @@ async def _prepare_contacts(client, task, account_id, parsed):
     if cache_hits:
         _log(task, "info", f"联系人缓存命中 {cache_hits}/{len(parsed)} 个号码")
     if unresolved:
-        _log(task, "info", f"仅查询 {len(unresolved)} 个新增或已过期号码")
-        users.update(await _import_contacts(client, task, account_id, unresolved))
-        refreshed = store.get_contact_cache(account_id, phone_digits)
-        for digits, row in refreshed.items():
-            if row["first_name"] or row["last_name"]:
-                profile_names[digits] = (row["first_name"], row["last_name"])
+        _log(task, "info", f"慢速预处理 {len(unresolved)} 个新增或已过期号码")
+        resolved_users, resolved_names = await _resolve_contacts(
+            client, task, account_id, unresolved
+        )
+        users.update(resolved_users)
+        profile_names.update(resolved_names)
 
     return users, profile_names
-
-
-async def _fetch_profile_names(client, task, account_id, users):
-    """拉取已注册号码对应 Telegram 账号的资料姓名。
-
-    原理：号码在通讯录中时，接口返回的是我们自己存的备注名；
-    删除联系人后返回的才是对方账号资料上设置的名字。
-    因此流程为：删除联系人 -> GetUsers 取资料名 -> 再重新导入（保证发名片时仍有关联）。
-
-    users: {纯数字号码: (user_id, access_hash)}
-    返回 {纯数字号码: (first_name, last_name)}，可能只包含部分号码（查询失败的不在内）。
-    """
-    if not users:
-        return {}
-
-    input_users = [
-        InputUser(user_id=uid, access_hash=ahash) for uid, ahash in users.values()
-    ]
-    phones_by_uid = {uid: phone for phone, (uid, _) in users.items()}
-    profile_names = {}
-    pending_flood = None
-
-    try:
-        # 1) 删除联系人，让 GetUsers 返回真实资料名
-        for start in range(0, len(input_users), 50):
-            chunk = input_users[start : start + 50]
-            await asyncio.wait_for(
-                client(DeleteContactsRequest(id=chunk)), timeout=60
-            )
-        # 2) 批量拉取资料名
-        for start in range(0, len(input_users), 50):
-            chunk = input_users[start : start + 50]
-            resp = await asyncio.wait_for(
-                client(GetUsersRequest(id=chunk)), timeout=60
-            )
-            for user in resp or []:
-                uid = getattr(user, "id", None)
-                phone = phones_by_uid.get(uid)
-                if not phone:
-                    continue
-                first = getattr(user, "first_name", None) or ""
-                last = getattr(user, "last_name", None) or ""
-                if first or last:
-                    profile_names[phone] = (first, last)
-    except FloodWaitError as exc:
-        pending_flood = exc
-    except (RPCError, asyncio.TimeoutError) as exc:
-        _log(
-            task,
-            "warn",
-            f"拉取 Telegram 资料姓名失败({type(exc).__name__})，将回退到其他命名规则",
-        )
-
-    finally:
-        # 无论查询是否成功，都恢复刚才删除的联系人，避免限流发生在流程中间时丢联系人。
-        restore_names = {
-            phone: profile_names.get(phone, (f"联系人{phone[-4:]}", ""))
-            for phone in users
-        }
-        await _reimport_with_names(client, task, restore_names)
-
-    if pending_flood is not None:
-        raise pending_flood
-    if profile_names:
-        store.update_cached_contact_names(account_id, profile_names)
-    return profile_names
-
-
-async def _reimport_with_names(client, task, profile_names):
-    """按资料姓名重新导入联系人，恢复号码-账号关联状态."""
-    contacts = [
-        InputPhoneContact(
-            client_id=i, phone=f"+{phone}", first_name=first, last_name=last
-        )
-        for i, (phone, (first, last)) in enumerate(profile_names.items())
-    ]
-    for start in range(0, len(contacts), 50):
-        chunk = contacts[start : start + 50]
-        try:
-            await asyncio.wait_for(
-                client(ImportContactsRequest(chunk)), timeout=60
-            )
-        except FloodWaitError:
-            raise
-        except (RPCError, asyncio.TimeoutError) as exc:
-            _log(
-                task,
-                "warn",
-                f"恢复通讯录关联第 {start // 50 + 1} 批失败({type(exc).__name__})，相关名片可能无头像",
-            )
 
 
 async def _sleep_or_stop(seconds, stop_event):
@@ -682,19 +592,64 @@ async def _wait_with_status(task, seconds, reason):
     return True
 
 
-async def _handle_rate_limit(task, exc, context, attempt):
+def _record_rate_limit(
+    task,
+    account_id,
+    method,
+    error_type,
+    wait_seconds=0,
+    target_key="",
+):
+    try:
+        store.record_rate_limit_event(
+            account_id,
+            method,
+            error_type,
+            wait_seconds=wait_seconds,
+            target_key=target_key,
+        )
+    except Exception as exc:
+        _log(task, "warn", f"限流事件持久化失败: {type(exc).__name__}")
+
+
+async def _handle_rate_limit(
+    task,
+    account_id,
+    exc,
+    context,
+    attempt,
+    method,
+    target_key="",
+):
     wait = max(1, int(getattr(exc, "seconds", 0) or 1))
+    safety_margin = max(5, math.ceil(wait * 0.1))
+    total_wait = wait + safety_margin
+    _record_rate_limit(
+        task,
+        account_id,
+        method,
+        "FLOOD_WAIT",
+        wait_seconds=wait,
+        target_key=target_key,
+    )
+    try:
+        store.set_account_cooldown(
+            account_id,
+            int(time.time()) + total_wait,
+            reason=f"FLOOD_WAIT:{method}",
+        )
+    except Exception as exc:
+        _log(task, "warn", f"账号冷却状态持久化失败: {type(exc).__name__}")
+
     if wait > MAX_AUTO_FLOOD_WAIT or attempt > MAX_FLOOD_RETRIES_PER_MESSAGE:
         task["status"] = "stopped"
         task["error"] = (
             f"{context}触发长时间或重复限流，需要等待 {wait} 秒；"
-            "已执行账号熔断，请等待后人工重试"
+            "已保存账号冷却时间，到期前不可重新启动任务"
         )
         _log(task, "error", task["error"])
         return False
 
-    safety_margin = max(5, math.ceil(wait * 0.1))
-    total_wait = wait + safety_margin
     _log(
         task,
         "warn",
@@ -706,8 +661,35 @@ async def _handle_rate_limit(task, exc, context, attempt):
 def _is_account_restriction(exc):
     error_name = type(exc).__name__.upper()
     error_text = str(exc).upper()
-    markers = ("PEER_FLOOD", "USER_RESTRICTED", "USER_DEACTIVATED", "ACCOUNT_RESTRICTED")
+    markers = (
+        "PEER_FLOOD",
+        "USER_RESTRICTED",
+        "USER_DEACTIVATED",
+        "ACCOUNT_RESTRICTED",
+    )
     return any(marker in error_name or marker in error_text for marker in markers)
+
+
+def _trip_account_guard(task, account_id, exc, method, target_key=""):
+    reason = type(exc).__name__ or "PEER_FLOOD"
+    _record_rate_limit(
+        task,
+        account_id,
+        method,
+        reason,
+        target_key=target_key,
+    )
+    try:
+        store.block_account_sending(account_id, reason)
+    except Exception as persist_exc:
+        _log(task, "warn", f"账号熔断持久化失败: {type(persist_exc).__name__}")
+
+
+def clear_account_send_block(account_id):
+    if not store.get_account(account_id):
+        raise ValueError("账号不存在")
+    store.clear_account_send_block(account_id)
+    return True
 
 
 async def start_share(account_id, targets, numbers_text, options):
@@ -716,6 +698,17 @@ async def start_share(account_id, targets, numbers_text, options):
         raise ValueError("账号不存在")
     if not targets:
         raise ValueError("请先选择目标会话/群组")
+
+    guard = store.get_account_send_guard(account_id)
+    if guard["blocked"]:
+        raise ValueError(
+            "该账号已触发 Telegram 发送限制，已持久化熔断；"
+            "请先在 @SpamBot 检查账号状态，确认恢复后再手动解除"
+        )
+    cooldown_until = int(guard.get("cooldown_until") or 0)
+    remaining = cooldown_until - int(time.time())
+    if remaining > 0:
+        raise ValueError(f"该账号仍在 Telegram 限流冷却期，请等待 {remaining} 秒后重试")
 
     parsed = parse_numbers(numbers_text)
     if not parsed:
@@ -786,79 +779,65 @@ async def _run_share(task, account, targets, parsed, options):
             f"安全发送：每批 {batch_size} 条、每条间隔 {interval:g} 秒、批次冷却 {batch_pause:g} 秒",
         )
 
-        prepare_attempt = 0
-        while True:
-            try:
-                users, profile_names = await _prepare_contacts(
-                    client, task, account["id"], parsed
-                )
-                break
-            except FloodWaitError as exc:
-                prepare_attempt += 1
-                if not await _handle_rate_limit(
-                    task, exc, "联系人准备", prepare_attempt
-                ):
-                    return
-        registered = set(users.keys())
-        _log(
-            task,
-            "info",
-            f"通讯录导入完成：{len(registered)}/{len(parsed)} 个号码已关联 Telegram 账号",
-        )
-
-        # 勾选「批量获取缺失姓名」时，拉取对方 Telegram 账号资料上设置的姓名
-        if fetch_names and registered:
-            input_named_phones = {
-                re.sub(r"\D", "", item["phone"])
+        users = {}
+        profile_names = {}
+        lookup_parsed = (
+            parsed
+            if skip_unresolved
+            else [
+                item
                 for item in parsed
-                if item["first_name"] or item["last_name"]
-            }
-            users_needing_names = {
-                digits: user
-                for digits, user in users.items()
-                if digits not in profile_names and digits not in input_named_phones
-            }
-            fetch_attempt = 0
-            while users_needing_names:
+                if fetch_names and not (item["first_name"] or item["last_name"])
+            ]
+        )
+        if lookup_parsed:
+            prepare_attempt = 0
+            while True:
                 try:
-                    fetched_names = await _fetch_profile_names(
-                        client, task, account["id"], users_needing_names
+                    users, profile_names = await _prepare_contacts(
+                        client,
+                        task,
+                        account["id"],
+                        lookup_parsed,
+                        require_profile_names=fetch_names,
                     )
-                    profile_names.update(fetched_names)
                     break
                 except FloodWaitError as exc:
-                    fetch_attempt += 1
+                    prepare_attempt += 1
                     if not await _handle_rate_limit(
-                        task, exc, "资料姓名查询", fetch_attempt
+                        task,
+                        account["id"],
+                        exc,
+                        "号码预处理",
+                        prepare_attempt,
+                        "contacts.resolvePhone",
                     ):
                         return
-            fetched = sum(
-                1
-                for n in parsed
-                if not (n["first_name"] or n["last_name"])
-                and re.sub(r"\D", "", n["phone"]) in profile_names
-            )
             _log(
                 task,
                 "info",
-                f"资料姓名获取完成：{fetched} 个号码取到 Telegram 账号姓名",
+                f"号码预处理完成：{len(users)}/{len(lookup_parsed)} 个号码可解析",
             )
+        else:
+            _log(task, "info", "直接发送模式：已跳过通讯录导入和手机号查询")
+
+        registered = set(users.keys())
 
         if skip_unresolved:
             unreg_count = sum(
                 1 for n in parsed if re.sub(r"\D", "", n["phone"]) not in registered
             )
             if unreg_count:
-                _log(task, "warn", f"检测到 {unreg_count} 个号码未注册 Telegram，将按规则跳过")
-        sent_in_batch = 0
-        for round_no in range(1, rounds + 1):
-            if task["stop"].is_set():
-                break
-            _log(task, "info", f"开始第 {round_no}/{rounds} 轮")
-            for number in parsed:
-                if task["stop"].is_set():
-                    break
+                _log(
+                    task,
+                    "warn",
+                    f"有 {unreg_count} 个号码未解析或受隐私设置限制，将按规则跳过",
+                )
 
+        work_queue = []
+        sequence = 0
+        for round_no in range(1, rounds + 1):
+            for number in parsed:
                 phone = number["phone"]
                 first = number["first_name"] or ""
                 last = number["last_name"] or ""
@@ -870,7 +849,7 @@ async def _run_share(task, account, targets, parsed, options):
                     _log(
                         task,
                         "warn",
-                        f"{mask_phone(phone)} 未关联 Telegram 账号，已跳过",
+                        f"{mask_phone(phone)} 未解析或不可见，已跳过",
                     )
                     continue
 
@@ -907,66 +886,156 @@ async def _run_share(task, account, targets, parsed, options):
                     last_name=last,
                     vcard="",
                 )
-                for peer in peers:
-                    if task["stop"].is_set():
+                for target_index, peer in enumerate(peers):
+                    target = targets[target_index]
+                    target_key = f"{target.get('type')}:{target.get('id')}"
+                    item = {
+                        "round_no": round_no,
+                        "phone": phone,
+                        "media": media,
+                        "peer": peer,
+                        "target_key": target_key,
+                        "target_name": target_names[target_index],
+                        "slow_attempt": 0,
+                    }
+                    heapq.heappush(work_queue, (0.0, sequence, item))
+                    sequence += 1
+
+        sent_in_batch = 0
+        target_ready_at = {}
+        announced_rounds = set()
+        while work_queue and not task["stop"].is_set():
+            ready_at, item_sequence, item = heapq.heappop(work_queue)
+            target_key = item["target_key"]
+            effective_ready_at = max(
+                ready_at,
+                target_ready_at.get(target_key, 0.0),
+            )
+            now = _monotonic()
+            if effective_ready_at > now:
+                heapq.heappush(
+                    work_queue,
+                    (effective_ready_at, item_sequence, item),
+                )
+                next_ready_at = work_queue[0][0]
+                wait_seconds = max(0, next_ready_at - _monotonic())
+                if wait_seconds > 0 and not await _wait_with_status(
+                    task,
+                    wait_seconds,
+                    f"{item['target_name']} 群慢速",
+                ):
+                    break
+                continue
+
+            round_no = item["round_no"]
+            if round_no not in announced_rounds:
+                announced_rounds.add(round_no)
+                _log(task, "info", f"开始第 {round_no}/{rounds} 轮")
+
+            flood_attempt = 0
+            deferred = False
+            while not task["stop"].is_set():
+                try:
+                    sent_msg = await asyncio.wait_for(
+                        client.send_file(item["peer"], item["media"]), timeout=60
+                    )
+                    task["ok"] += 1
+                    msg_id = getattr(sent_msg, "id", None)
+                    if msg_id:
+                        _log(
+                            task,
+                            "info",
+                            f"{mask_phone(item['phone'])} 已发送到 {item['target_name']} msg_id={msg_id}",
+                        )
+                    break
+                except SlowModeWaitError as exc:
+                    wait = max(1, int(getattr(exc, "seconds", 0) or 1))
+                    item["slow_attempt"] += 1
+                    _record_rate_limit(
+                        task,
+                        account["id"],
+                        "messages.sendMedia",
+                        "SLOWMODE_WAIT",
+                        wait_seconds=wait,
+                        target_key=target_key,
+                    )
+                    if item["slow_attempt"] > MAX_SLOWMODE_RETRIES_PER_MESSAGE:
+                        task["failed"] += 1
+                        _log(
+                            task,
+                            "error",
+                            f"{item['target_name']} 多次触发群慢速，已放弃当前名片",
+                        )
                         break
-                    flood_attempt = 0
-                    while not task["stop"].is_set():
-                        try:
-                            sent_msg = await asyncio.wait_for(
-                                client.send_file(peer, media), timeout=60
-                            )
-                            task["ok"] += 1
-                            msg_id = getattr(sent_msg, "id", None)
-                            if msg_id:
-                                _log(
-                                    task,
-                                    "info",
-                                    f"{mask_phone(phone)} 已发送 msg_id={msg_id}",
-                                )
-                            break
-                        except (FloodWaitError, SlowModeWaitError) as exc:
-                            flood_attempt += 1
-                            if not await _handle_rate_limit(
-                                task,
-                                exc,
-                                f"发送 {mask_phone(phone)}",
-                                flood_attempt,
-                            ):
-                                if not task["stop"].is_set():
-                                    task["failed"] += 1
-                                    task["done"] += 1
-                                return
-                        except Exception as exc:
-                            task["failed"] += 1
-                            if _is_account_restriction(exc):
-                                task["status"] = "stopped"
-                                task["error"] = "Telegram 已限制该账号，任务已熔断；请通过 @SpamBot 检查账号状态"
-                                _log(task, "error", task["error"])
-                                task["done"] += 1
-                                return
-                            _log(
-                                task,
-                                "error",
-                                f"发送 {mask_phone(phone)} 失败: {friendly_error(exc)}",
-                            )
-                            break
-
-                    task["done"] += 1
-                    sent_in_batch += 1
-
-                    if task["done"] < task["total"]:
-                        await _sleep_or_stop(interval, task["stop"])
-                    if (
-                        not task["stop"].is_set()
-                        and sent_in_batch >= batch_size
-                        and task["done"] < task["total"]
-                        and batch_pause > 0
+                    target_ready_at[target_key] = _monotonic() + wait + 1
+                    heapq.heappush(
+                        work_queue,
+                        (target_ready_at[target_key], item_sequence, item),
+                    )
+                    _log(
+                        task,
+                        "warn",
+                        f"{item['target_name']} 触发群慢速 {wait} 秒，已延后该群，其他群继续",
+                    )
+                    deferred = True
+                    break
+                except FloodWaitError as exc:
+                    flood_attempt += 1
+                    if not await _handle_rate_limit(
+                        task,
+                        account["id"],
+                        exc,
+                        f"发送 {mask_phone(item['phone'])}",
+                        flood_attempt,
+                        "messages.sendMedia",
+                        target_key=target_key,
                     ):
-                        sent_in_batch = 0
-                        _log(task, "info", f"本批 {batch_size} 条已完成，开始批次冷却")
-                        if not await _wait_with_status(task, batch_pause, "批次冷却"):
-                            break
+                        if not task["stop"].is_set():
+                            task["failed"] += 1
+                            task["done"] += 1
+                        return
+                except Exception as exc:
+                    task["failed"] += 1
+                    if _is_account_restriction(exc):
+                        _trip_account_guard(
+                            task,
+                            account["id"],
+                            exc,
+                            "messages.sendMedia",
+                            target_key=target_key,
+                        )
+                        task["status"] = "stopped"
+                        task["error"] = (
+                            "Telegram 已限制该账号，任务已持久化熔断；"
+                            "请通过 @SpamBot 检查账号状态"
+                        )
+                        _log(task, "error", task["error"])
+                        task["done"] += 1
+                        return
+                    _log(
+                        task,
+                        "error",
+                        f"发送 {mask_phone(item['phone'])} 失败: {friendly_error(exc)}",
+                    )
+                    break
+
+            if deferred:
+                continue
+
+            task["done"] += 1
+            sent_in_batch += 1
+            if task["done"] < task["total"]:
+                await _sleep_or_stop(interval, task["stop"])
+            if (
+                not task["stop"].is_set()
+                and sent_in_batch >= batch_size
+                and task["done"] < task["total"]
+                and batch_pause > 0
+            ):
+                sent_in_batch = 0
+                _log(task, "info", f"本批 {batch_size} 条已完成，开始批次冷却")
+                if not await _wait_with_status(task, batch_pause, "批次冷却"):
+                    break
 
         if task["stop"].is_set():
             task["status"] = "stopped"
