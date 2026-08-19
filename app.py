@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional, Union
 
 import store
 import tg
@@ -128,7 +128,7 @@ async def license_clear():
 
 class ConfigIn(BaseModel):
     api_id: int = Field(gt=0)
-    api_hash: str | None = None
+    api_hash: Optional[str] = None
     proxy_enabled: bool = False
     proxy_type: str = "socks5"
     proxy_host: str = ""
@@ -157,8 +157,8 @@ class ImportIn(BaseModel):
 class ShareTarget(BaseModel):
     type: Literal["user", "chat", "channel"]
     id: int = Field(gt=0)
-    name: str | None = None
-    access_hash: int | str | None = None
+    name: Optional[str] = None
+    access_hash: Optional[Union[int, str]] = None
 
 
 class ShareOptions(BaseModel):
